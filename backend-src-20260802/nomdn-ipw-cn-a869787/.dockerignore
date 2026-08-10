@@ -1,0 +1,14 @@
+# Location databases are intentionally kept out of the node-tool build context.
+*.mmdb
+*.xdb
+*.ipdb
+full.txt
+short.txt
+tmp/
+frontend-ssr/
+edgeone/
+edgeone-getip/
+lemon-getip/
+*.exe
+*.gz
+.git/

@@ -1,0 +1,10 @@
+{
+    "port": 8080,
+    "gh-proxy": "",
+    "single-stack": "",
+    "dns-server": "",
+    "cors": "",
+    "keyless-origins": "",
+    "block-private-ips": true,
+    "ipdb": true
+}

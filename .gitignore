@@ -1,0 +1,67 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.env
+!*.env.example
+node_keys.json
+**/node_keys.json
+*.askpass
+askpass*
+*.pem
+*.p12
+*.pfx
+
+# Dependencies and build outputs
+node_modules/
+dist/
+.vite/
+.nuxt/
+.output/
+coverage/
+*.tsbuildinfo
+
+# Local operations, backups and releases
+/deploy/
+/backup/
+/release/
+/__pycache__/
+*.pyc
+*.log
+/deploy_ipw_fix.py
+/ipw-online-check.css
+
+# Archives and compiled binaries
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+/ipw-backend-*
+/backend-src-20260802/nomdn-ipw-cn-a869787/ipw-backend-*
+
+# Runtime-downloaded IP databases
+*.xdb
+*.mmdb
+*.ipdb
+/backend-src-20260802/nomdn-ipw-cn-a869787/full.txt
+/backend-src-20260802/nomdn-ipw-cn-a869787/short.txt
+
+# Upstream components not used by this distribution
+/backend-src-20260802/nomdn-ipw-cn-a869787/.github/
+/backend-src-20260802/nomdn-ipw-cn-a869787/edgeone/
+/backend-src-20260802/nomdn-ipw-cn-a869787/edgeone-getip/
+/backend-src-20260802/nomdn-ipw-cn-a869787/frontend-ssr/
+/backend-src-20260802/nomdn-ipw-cn-a869787/lemon-getip/
+
+# Local extraction notes
+/src/extracted_6_api_methods.txt
+/src/extracted_6_pages.txt
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
