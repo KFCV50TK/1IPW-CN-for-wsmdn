@@ -1,11 +1,14 @@
-﻿package main
+package main
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -245,16 +248,17 @@ type cdnSignature struct {
 
 // cname 特征均来自实测 DNS 解析结果，勿凭印象增删。
 // 参考实测（2026-08-08）：
-//   www.qq.com        -> ins-r23tsuuf.ias.tencent-cloud.net   EdgeOne
-//   www.tencent.com   -> www.tencent.com.eo.dnse5.com          EdgeOne
-//   edgeone.ai        -> edgeone.ai.eo.dnse5.com               EdgeOne
-//   cloud.tencent.com -> cloud.tencent-cloud.com               腾讯云
-//   www.taobao.com    -> www.taobao.com.danuoyi.tbcache.com    阿里云
-//   www.alibaba.com   -> www.alibaba.com.gds.alibabadns.com    阿里云
-//   www.bilibili.com  -> a.w.bilicdn1.com                      哔哩哔哩
-//   www.jd.com        -> www.jd.com.gslb.qianxun.com           京东云
-//   www.akamai.com    -> www.akamai.com.edgekey.net            Akamai
-//   www.fastly.com    -> prod.www-fastly-com.map.fastly.net    Fastly
+//
+//	www.qq.com        -> ins-r23tsuuf.ias.tencent-cloud.net   EdgeOne
+//	www.tencent.com   -> www.tencent.com.eo.dnse5.com          EdgeOne
+//	edgeone.ai        -> edgeone.ai.eo.dnse5.com               EdgeOne
+//	cloud.tencent.com -> cloud.tencent-cloud.com               腾讯云
+//	www.taobao.com    -> www.taobao.com.danuoyi.tbcache.com    阿里云
+//	www.alibaba.com   -> www.alibaba.com.gds.alibabadns.com    阿里云
+//	www.bilibili.com  -> a.w.bilicdn1.com                      哔哩哔哩
+//	www.jd.com        -> www.jd.com.gslb.qianxun.com           京东云
+//	www.akamai.com    -> www.akamai.com.edgekey.net            Akamai
+//	www.fastly.com    -> prod.www-fastly-com.map.fastly.net    Fastly
 var cdnSignatures = []cdnSignature{
 	// EdgeOne 放在腾讯云之前：.ias.tencent-cloud.net 属于 EdgeOne 接入，
 	// 若先匹配通用的 tencent-cloud 会被误判成普通腾讯云。
@@ -327,7 +331,6 @@ func isCloudflareIP(ip string) bool {
 	return false
 }
 
-
 func cdnDetectHandler(c *gin.Context) {
 	urlStr := strings.TrimPrefix(c.Param("url"), "/")
 	if urlStr == "" {
@@ -366,25 +369,30 @@ func cdnDetectHandler(c *gin.Context) {
 	}
 
 	cnameStr := strings.ToLower(cname)
-		cdnName := matchCDNByCNAME(cnameStr)
-		if cdnName == "" && len(result.IPs) > 0 && isCloudflareIP(result.IPs[0]) {
-			cdnName = "Cloudflare (by IP)"
-		}
-		if cdnName != "" {
-			result.CDN = cdnName
-		}
+	cdnName := matchCDNByCNAME(cnameStr)
+	if cdnName == "" && len(result.IPs) > 0 && isCloudflareIP(result.IPs[0]) {
+		cdnName = "Cloudflare (by IP)"
+	}
+	if cdnName != "" {
+		result.CDN = cdnName
+	}
 
 	c.JSON(200, result)
 }
 
 func extractHost(urlStr string) string {
-	urlStr = strings.TrimPrefix(urlStr, "http://")
-	urlStr = strings.TrimPrefix(urlStr, "https://")
-	parts := strings.Split(urlStr, "/")
-	if len(parts) > 0 {
-		return parts[0]
+	normalized := strings.TrimSpace(urlStr)
+	if normalized == "" {
+		return ""
 	}
-	return urlStr
+	if !strings.Contains(normalized, "://") {
+		normalized = "https://" + normalized
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 // ============ 4. 批量IP查询 ============
@@ -471,20 +479,54 @@ func securityHeadersHandler(c *gin.Context) {
 		urlStr = "https://" + urlStr
 	}
 
-	host := extractHost(urlStr)
-	if ssrf.HasLocalOrPrivateIP(host) {
-		c.JSON(200, SecurityHeadersResult{URL: urlStr, Grade: "N/A", Score: 0})
+	parsed, err := url.Parse(urlStr)
+	if err != nil || parsed.Hostname() == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的URL"})
 		return
 	}
 
+	// Default-deny: resolve and validate the target before connecting. If DNS
+	// resolution fails or any address is private/internal, refuse outright.
+	ctx, err := ssrf.ValidateOutboundTarget(c.Request.Context(), urlStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "目标地址不允许访问（SSRF 防护）"})
+		return
+	}
+
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(dialCtx context.Context, _, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ip, err := selectTargetIP(dialCtx, host, "tcp4")
+			if err != nil {
+				ip, err = selectTargetIP(dialCtx, host, "tcp6")
+			}
+			if err != nil {
+				return nil, err
+			}
+			return dialer.DialContext(dialCtx, "tcp", net.JoinHostPort(ip.String(), port))
+		},
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		DisableKeepAlives: true,
+	}
+
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Transport: transport,
+		Timeout:   10 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
-	resp, err := client.Get(urlStr)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的URL"})
+		return
+	}
+	resp, err := client.Do(request)
 	if err != nil {
 		c.JSON(500, gin.H{"error": fmt.Sprintf("请求失败: %v", err)})
 		return
@@ -544,7 +586,6 @@ func securityHeadersHandler(c *gin.Context) {
 	c.JSON(200, result)
 }
 
-// ============ 6. CT Log 查询 ============
 type CTLogResult struct {
 	Domain       string      `json:"domain"`
 	Certificates []CTLogCert `json:"certificates"`
@@ -601,7 +642,9 @@ func ctLogHandler(c *gin.Context) {
 	if err := json.Unmarshal(body, &certs); err != nil {
 		// Try to surface partial info for debug
 		snippet := string(body)
-		if len(snippet) > 200 { snippet = snippet[:200] }
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
 		c.JSON(500, gin.H{"error": "解析响应失败", "detail": snippet})
 		return
 	}

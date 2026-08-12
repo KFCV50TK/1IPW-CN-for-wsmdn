@@ -15,19 +15,20 @@ import (
 // resolver. The resolver must be an IP literal so this endpoint cannot be
 // used to resolve an attacker-controlled DNS name into an internal target.
 type CustomDNSQuery struct {
-	Domain        string   `json:"domain"`
-	RecordType    string   `json:"record_type"`
-	Server        string   `json:"server"`
-	DNSSEC        bool     `json:"dnssec"`
-	RCode         int      `json:"rcode"`
-	Duration      float64  `json:"duration"`
-	Authoritative bool     `json:"authoritative"`
-	Truncated     bool     `json:"truncated"`
-	Authenticated bool     `json:"authenticated"`
-	Answers       []string `json:"answers"`
-	Authorities   []string `json:"authorities"`
-	Additionals   []string `json:"additionals"`
-	Validation    string   `json:"validation,omitempty"`
+	Domain         string   `json:"domain"`
+	RecordType     string   `json:"record_type"`
+	Server         string   `json:"server"`
+	DNSSEC         bool     `json:"dnssec"`
+	RCode          int      `json:"rcode"`
+	Duration       float64  `json:"duration"`
+	Authoritative  bool     `json:"authoritative"`
+	Truncated      bool     `json:"truncated"`
+	Authenticated  bool     `json:"authenticated"`
+	Answers        []string `json:"answers"`
+	Authorities    []string `json:"authorities"`
+	Additionals    []string `json:"additionals"`
+	Validation     string   `json:"validation,omitempty"`
+	ValidationNote string   `json:"validation_note,omitempty"`
 }
 
 var allowedRecordTypes = map[string]uint16{
@@ -143,10 +144,11 @@ func QueryCustomDNS(ctx context.Context, domain, recordType, server string, dnss
 	}
 	if dnssec {
 		if response.AuthenticatedData {
-			result.Validation = "validated"
+			result.Validation = "ad-bit"
 		} else {
 			result.Validation = "not-validated"
 		}
+		result.ValidationNote = "AD 位来自所选解析器，未在本地验证 DNSSEC 链"
 	}
 	if result.RCode != dns.RcodeSuccess && result.RCode != dns.RcodeNameError {
 		return result, fmt.Errorf("DNS server returned RCODE %d", result.RCode)

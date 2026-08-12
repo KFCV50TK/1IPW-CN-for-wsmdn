@@ -51,48 +51,6 @@ type keyStore struct {
 
 var nodeKeys = &keyStore{}
 
-// keylessOrigins is intentionally separate from the CORS allow list. CORS
-// controls browser access only; this list is the explicit opt-in for routes
-// that may be called without a node API key.
-var keylessOrigins = map[string]struct{}{}
-
-func configureKeylessOrigins(raw string) {
-	configured := make(map[string]struct{})
-	for _, origin := range strings.Split(raw, ",") {
-		if normalized, ok := normalizeHTTPSOrigin(origin); ok {
-			configured[normalized] = struct{}{}
-		}
-	}
-	keylessOrigins = configured
-}
-
-func normalizeHTTPSOrigin(raw string) (string, bool) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", false
-	}
-	if parsed.Path != "" && parsed.Path != "/" {
-		return "", false
-	}
-	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
-	if host == "" {
-		return "", false
-	}
-	if port := parsed.Port(); port != "" && port != "443" {
-		host = net.JoinHostPort(host, port)
-	}
-	return "https://" + host, true
-}
-
-func isKeylessOrigin(c *gin.Context) bool {
-	origin, ok := normalizeHTTPSOrigin(c.GetHeader("Origin"))
-	if !ok {
-		return false
-	}
-	_, ok = keylessOrigins[origin]
-	return ok
-}
-
 func initKeyStore() error {
 	path := strings.TrimSpace(os.Getenv("IPW_API_KEY_STORE"))
 	if path == "" {
@@ -166,14 +124,18 @@ func bearerToken(c *gin.Context) string {
 }
 
 func requireNodeKey(c *gin.Context) bool {
-	if isKeylessOrigin(c) {
-		return true
-	}
 	if !nodeKeys.valid(bearerToken(c)) {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "valid API key required"})
 		return false
 	}
 	return true
+}
+
+func limitNodeBody(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
+	}
 }
 
 func requireAdmin(c *gin.Context) bool {
@@ -803,7 +765,6 @@ func parseWhoisDetails(raw string) whoisDetails {
 	}
 }
 
-
 // localCheckWrapper 包装 GET+路径参数的 handler 为 POST+JSON，用于公共节点代理。
 // 接受 {"domain":"x"} 或 {"ip":"x"} 或 {"url":"x"} 或 {"target":"x"}，
 // 注入为路径参数后委派给原 handler。batch 直接透传 body。
@@ -883,11 +844,11 @@ func registerNodeAPIRoutes(r *gin.Engine) {
 		panic(err)
 	}
 	register := func(prefix string) {
-		admin := r.Group(prefix + "/admin")
+		admin := r.Group(prefix+"/admin", limitNodeBody(maxHTTPBody))
 		admin.GET("/keys", listKeysHandler)
 		admin.POST("/keys", createKeyHandler)
 		admin.DELETE("/keys/:id", revokeKeyHandler)
-		protected := r.Group(prefix)
+		protected := r.Group(prefix, limitNodeBody(maxHTTPBody))
 		protected.POST("/http-test", httpProbeHandler)
 		protected.POST("/tcp-test", tcpProbeHandler)
 		protected.POST("/udp-test", udpProbeHandler)

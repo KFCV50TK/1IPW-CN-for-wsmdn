@@ -120,14 +120,55 @@ func IsPrivateIP(ip net.IP) bool {
 	if ip.IsPrivate() {
 		return true
 	}
-	if ip.IsLoopback() {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
 		return true
 	}
-	if ip.IsLinkLocalUnicast() {
+	if ip.IsMulticast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() {
 		return true
 	}
-	if ip.IsUnspecified() {
+	if ip.Equal(net.IPv4bcast) {
 		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		// CGNAT / shared address space: 100.64.0.0/10.
+		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			return true
+		}
+		// IETF protocol assignments: 192.0.0.0/24 (incl. NAT64 well-known).
+		if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 0 {
+			return true
+		}
+		// Documentation ranges: 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24.
+		if ip4[0] == 192 && ip4[1] == 0 && ip4[2] == 2 {
+			return true
+		}
+		if ip4[0] == 198 && ip4[1] == 51 && ip4[2] == 100 {
+			return true
+		}
+		if ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113 {
+			return true
+		}
+		// Benchmarking: 198.18.0.0/15.
+		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+			return true
+		}
+		// Reserved: 240.0.0.0/4 (also covers 255.0.0.0/8 except the broadcast
+		// address handled above).
+		if ip4[0] >= 240 {
+			return true
+		}
+		return false
+	}
+	if ip16 := ip.To16(); ip16 != nil {
+		// Documentation: 2001:db8::/32.
+		if ip16[0] == 0x20 && ip16[1] == 0x01 && ip16[2] == 0x0d && ip16[3] == 0xb8 {
+			return true
+		}
+		// NAT64 well-known prefix: 64:ff9b::/96.
+		if ip16[0] == 0 && ip16[1] == 0 && ip16[2] == 0 && ip16[3] == 0 &&
+			ip16[4] == 0 && ip16[5] == 0 && ip16[6] == 0x64 && ip16[7] == 0xff && ip16[8] == 0x9b {
+			return true
+		}
 	}
 	return false
 }

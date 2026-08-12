@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"lemon-ipw/ssrf"
 )
 
 func TestPublicSpeedRequestURLUsesRC71Route(t *testing.T) {
@@ -172,33 +174,6 @@ func TestRequestURLFromQuery(t *testing.T) {
 	}
 }
 
-func TestKeylessOriginAllowsOnlyConfiguredHTTPSOrigin(t *testing.T) {
-	previous := keylessOrigins
-	defer func() { keylessOrigins = previous }()
-	configureKeylessOrigins("https://app.example.com")
-
-	for _, test := range []struct {
-		origin string
-		want   bool
-	}{
-		{"https://app.example.com", true},
-		{"https://APP.EXAMPLE.COM/", true},
-		{"https://app.example.com:443", true},
-		{"http://app.example.com", false},
-		{"https://app.example.com.evil.example", false},
-		{"https://app.example.com/path", false},
-		{"", false},
-	} {
-		recorder := httptest.NewRecorder()
-		context, _ := gin.CreateTestContext(recorder)
-		context.Request = httptest.NewRequest(http.MethodPost, "/v1/http-test", nil)
-		context.Request.Header.Set("Origin", test.origin)
-		if got := isKeylessOrigin(context); got != test.want {
-			t.Errorf("isKeylessOrigin(%q) = %v, want %v", test.origin, got, test.want)
-		}
-	}
-}
-
 func TestRequestURLFromWildcard(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -267,5 +242,45 @@ func TestParseTracerouteOutput(t *testing.T) {
 	}
 	if hops[2].Address != "8.8.8.8" || hops[2].RTT != 9.876 {
 		t.Fatalf("unexpected destination hop: %#v", hops[2])
+	}
+}
+
+func TestIsPrivateIPRejectsCGNATAndReservedRanges(t *testing.T) {
+	for _, raw := range []string{
+		"100.64.0.1", "100.127.255.254", "198.18.0.1", "240.0.0.1",
+		"127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.1.1",
+		"0.0.0.0", "255.255.255.255", "224.0.0.1", "2001:db8::1", "fe80::1",
+		"::1", "fc00::1",
+	} {
+		ip := net.ParseIP(raw)
+		if ip == nil {
+			t.Fatalf("failed to parse %q", raw)
+		}
+		if !ssrf.IsPrivateIP(ip) {
+			t.Errorf("expected %q to be treated as private/internal", raw)
+		}
+	}
+	for _, raw := range []string{"8.8.8.8", "1.1.1.1", "223.5.5.5", "2606:4700:4700::1111"} {
+		ip := net.ParseIP(raw)
+		if ip == nil {
+			t.Fatalf("failed to parse %q", raw)
+		}
+		if ssrf.IsPrivateIP(ip) {
+			t.Errorf("expected %q to be public", raw)
+		}
+	}
+}
+
+func TestSecurityHeadersRejectsPrivateTarget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, target := range []string{"127.0.0.1:8080", "http://[::1]:80/", "100.64.0.1", "10.0.0.1"} {
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		context.Params = gin.Params{{Key: "url", Value: "/" + target}}
+		context.Request = httptest.NewRequest(http.MethodGet, "/v1/security-headers/"+target, nil)
+		securityHeadersHandler(context)
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("securityHeadersHandler(%q) status = %d, want 400", target, recorder.Code)
+		}
 	}
 }

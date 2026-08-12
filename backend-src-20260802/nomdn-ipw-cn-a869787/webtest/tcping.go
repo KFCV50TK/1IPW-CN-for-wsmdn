@@ -2,10 +2,13 @@
 package webtest
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net"
 	"time"
+
+	"lemon-ipw/ssrf"
 )
 
 // TCPingResult 包含 TCP 连接测试的结果
@@ -33,8 +36,18 @@ type TCPingStats struct {
 
 // resolveHost 将主机名解析为指定协议版本的 IP 地址
 // version 参数支持 "v4"（IPv4）和 "v6"（IPv6）
+// isPublicAddress reports whether ip is a global unicast address. Private,
+// loopback, link-local, multicast, CGNAT and reserved ranges are rejected so
+// TCPing cannot be used as an internal port scanner.
+func isPublicAddress(ip net.IP) bool {
+	return !ssrf.IsPrivateIP(ip)
+}
+
 func resolveHost(host string, version string) (string, error) {
 	if ip := net.ParseIP(host); ip != nil {
+		if !isPublicAddress(ip) {
+			return "", fmt.Errorf("private or internal address is not allowed")
+		}
 		if version == "v4" && ip.To4() != nil {
 			return ip.String(), nil
 		}
@@ -56,6 +69,9 @@ func resolveHost(host string, version string) (string, error) {
 	}
 	for _, value := range result.Record {
 		if ip := net.ParseIP(value); ip != nil {
+			if !isPublicAddress(ip) {
+				return "", fmt.Errorf("private or internal address is not allowed")
+			}
 			return ip.String(), nil
 		}
 	}
@@ -63,15 +79,7 @@ func resolveHost(host string, version string) (string, error) {
 	return "", fmt.Errorf("no %s address found for %s", version, host)
 }
 
-// TCPing 执行单次 TCP 连接测试
-// 参数：
-//   - host: 目标主机名或 IP 地址
-//   - port: 目标端口号
-//   - version: 协议版本，"v4" 或 "v6"
-//   - timeout: 连接超时时间
-//
-// 返回 TCPingResult 包含连接结果和响应时间
-func TCPing(host string, port string, version string, timeout time.Duration) (*TCPingResult, error) {
+func TCPing(ctx context.Context, host string, port string, version string, timeout time.Duration) (*TCPingResult, error) {
 	ip, err := resolveHost(host, version)
 	if err != nil {
 		return nil, err
@@ -87,7 +95,8 @@ func TCPing(host string, port string, version string, timeout time.Duration) (*T
 
 	start := time.Now()
 
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	rtt := time.Since(start)
 
 	result := &TCPingResult{
@@ -119,7 +128,7 @@ func TCPing(host string, port string, version string, timeout time.Duration) (*T
 //   - interval: 两次测试之间的间隔时间
 //
 // 返回 TCPingStats 包含统计信息
-func TCPingRun(host string, port string, count int, version string, timeout time.Duration, interval time.Duration) (*TCPingStats, error) {
+func TCPingRun(ctx context.Context, host string, port string, count int, version string, timeout time.Duration, interval time.Duration) (*TCPingStats, error) {
 	ip, err := resolveHost(host, version)
 	if err != nil {
 		return &TCPingStats{
@@ -147,7 +156,7 @@ func TCPingRun(host string, port string, count int, version string, timeout time
 	successCount := 0
 
 	for i := 0; i < count; i++ {
-		result, err := TCPing(host, port, version, timeout)
+		result, err := TCPing(ctx, host, port, version, timeout)
 		if err != nil {
 			return nil, err
 		}

@@ -33,6 +33,47 @@ var (
 	bilibiliCache sync.Map
 )
 
+const (
+	bilibiliCacheMax = 1024
+	bilibiliCacheTTL = 24 * time.Hour
+)
+
+var bilibiliJanitorOnce sync.Once
+
+func bilibiliCacheSet(ip string, result *BilibiliResult) {
+	if syncMapLen(&bilibiliCache) >= bilibiliCacheMax {
+		sweepBilibiliCache()
+	}
+	bilibiliCacheSet(ip, result)
+}
+
+func syncMapLen(m *sync.Map) int {
+	count := 0
+	m.Range(func(_, _ interface{}) bool { count++; return true })
+	return count
+}
+
+func sweepBilibiliCache() {
+	bilibiliCache.Range(func(key, value interface{}) bool {
+		if entry, ok := value.(bilibiliCacheEntry); ok && time.Since(entry.timestamp) > bilibiliCacheTTL {
+			bilibiliCache.Delete(key)
+		}
+		return true
+	})
+}
+
+func startBilibiliJanitor() {
+	bilibiliJanitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(10 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				sweepBilibiliCache()
+			}
+		}()
+	})
+}
+
 type bilibiliCacheEntry struct {
 	result    *BilibiliResult
 	timestamp time.Time
@@ -472,6 +513,8 @@ func searchBilibili(ip string) (*BilibiliResult, error) {
 	}
 
 	client := resty.New()
+	client.SetTimeout(8 * time.Second)
+	client.SetResponseBodyLimit(1 << 20)
 	defer client.Close()
 	resp, err := client.R().
 		SetQueryParam("ip", ip).
@@ -555,6 +598,7 @@ func Init(ghproxy string) {
 		slog.Warn("Local ip2region not available", "error", err)
 		localOK = false
 	}
+	startBilibiliJanitor()
 	if err := loadQQWry(); err != nil {
 		slog.Warn("Local qqwry.ipdb not available", "error", err)
 		localOK = false

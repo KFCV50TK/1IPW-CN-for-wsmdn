@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -115,11 +114,9 @@ type publicQueryProxy struct {
 }
 
 func publicClientIP(c *gin.Context) string {
-	if value := strings.TrimSpace(c.GetHeader("X-IPW-Client-IP")); value != "" {
-		if ip := net.ParseIP(value); ip != nil {
-			return ip.String()
-		}
-	}
+	// Do not trust the X-IPW-Client-IP header from clients: it can be forged to
+	// bypass rate limiting. Nginx already sets trusted forwarding headers and
+	// Gin's ClientIP resolves the real client through configured proxies.
 	return c.ClientIP()
 }
 

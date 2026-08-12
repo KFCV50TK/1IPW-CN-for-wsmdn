@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"lemon-ipw/ipdb"
@@ -56,6 +57,10 @@ func initHTTPClients() {
 	V4Client.SetTransport(setTransport("tcp4"))
 	V6Client.SetTimeout(10 * time.Second)
 	V4Client.SetTimeout(10 * time.Second)
+	// Cap upstream response bodies (e.g. 8 MiB) so a malicious public server
+	// cannot make the service buffer unlimited data (memory DoS).
+	V6Client.SetResponseBodyLimit(maxUpstreamBody)
+	V4Client.SetResponseBodyLimit(maxUpstreamBody)
 	V6Client.SetRedirectPolicy(resty.RedirectPolicyFunc(ssrf.SecureCheckRedirect))
 	V4Client.SetRedirectPolicy(resty.RedirectPolicyFunc(ssrf.SecureCheckRedirect))
 	V6Client.AddContentDecompresser("zstd", decompressZstd)
@@ -166,20 +171,22 @@ var zstdReaderPool = sync.Pool{
 
 func decompressZstd(r io.ReadCloser) (io.ReadCloser, error) {
 	zr := zstdReaderPool.Get().(*zstd.Decoder)
-
-	err := zr.Reset(r)
-	if err != nil {
-		zstdReaderPool.Put(zr)
-		zr, _ = zstd.NewReader(r)
+	if err := zr.Reset(r); err != nil {
+		zr.Close()
+		var newErr error
+		zr, newErr = zstd.NewReader(r)
+		if newErr != nil {
+			return nil, newErr
+		}
 	}
-	defer zstdReaderPool.Put(zr)
-	z := &zstdReader{s: r, r: zr}
-	return z, nil
+	return &zstdReader{s: r, r: zr}, nil
 }
 
 type zstdReader struct {
-	s io.ReadCloser
-	r *zstd.Decoder
+	s         io.ReadCloser
+	r         *zstd.Decoder
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (b *zstdReader) Read(p []byte) (n int, err error) {
@@ -187,8 +194,18 @@ func (b *zstdReader) Read(p []byte) (n int, err error) {
 }
 
 func (b *zstdReader) Close() error {
-	b.r.Close()
-	return b.s.Close()
+	b.closeOnce.Do(func() {
+		b.closeErr = b.s.Close()
+		if err := b.r.Reset(nil); err != nil {
+			b.r.Close()
+			if b.closeErr == nil {
+				b.closeErr = err
+			}
+		} else {
+			zstdReaderPool.Put(b.r)
+		}
+	})
+	return b.closeErr
 }
 func cleanHostRecord(addr string) string {
 	if strings.HasPrefix(addr, "[") {
@@ -328,44 +345,19 @@ func (s *Setting) PortString() string {
 // Global variables and structs
 // 全局变量与结构体
 var (
-	PORTS           string
-	BIND_ADDRESS    string
-	GH_PROXY        string
-	LOG_LEVEL       string
-	websiteCache    sync.Map
-	SINGLE_STACK    string
-	DNS_SERVER      string
-	sslCache        sync.Map
-	pingCache       sync.Map
-	speedCache      sync.Map
-	sfGroup         singleflight.Group
-	V6Client        *resty.Client
-	V4Client        *resty.Client
-	IPDB            string
-	CORS            string
-	KEYLESS_ORIGINS string
-	ACCEPT_DOMAINS  []string
+	PORTS          string
+	BIND_ADDRESS   string
+	GH_PROXY       string
+	LOG_LEVEL      string
+	SINGLE_STACK   string
+	DNS_SERVER     string
+	sfGroup        singleflight.Group
+	V6Client       *resty.Client
+	V4Client       *resty.Client
+	IPDB           string
+	CORS           string
+	ACCEPT_DOMAINS []string
 )
-
-type websiteCacheEntry struct {
-	result    *WebsiteCheckResult
-	timestamp time.Time
-}
-
-type sslCacheEntry struct {
-	result    *SSLCheckResult
-	timestamp time.Time
-}
-
-type pingCacheEntry struct {
-	result    *TCPingResult
-	timestamp time.Time
-}
-
-type speedCacheEntry struct {
-	result    *WebsiteSpeedTestResult
-	timestamp time.Time
-}
 
 type WebsiteCheckResult struct {
 	IPv4 *WebsiteCheckDetail `json:"ipv4"`
@@ -387,20 +379,22 @@ type WebsiteCheckDetail struct {
 }
 
 type SSLCheckDetail struct {
-	CertValidityDays   int       `json:"cert_validity_days"`
-	CertStartTime      time.Time `json:"cert_start_time"`
-	CertEndTime        time.Time `json:"cert_end_time"`
-	HTTPVersion        string    `json:"http_version"`
-	HostRecord         string    `json:"host_record"`
-	HTTPSSStatusCode   int       `json:"https_status_code"`
-	TotalTime          float64   `json:"total_time"`
-	DownloadSpeed      float64   `json:"download_speed"`
-	Domain             string    `json:"domain"`
-	IssuerOrganization []string  `json:"issuer_organization"`
-	IssuerCommonName   string    `json:"issuer_common_name"`
-	SubjectCommonName  string    `json:"subject_common_name"`
-	IsExpired          bool      `json:"is_expired"`
-	IsReachable        bool      `json:"is_reachable"`
+	CertValidityDays    int       `json:"cert_validity_days"`
+	CertStartTime       time.Time `json:"cert_start_time"`
+	CertEndTime         time.Time `json:"cert_end_time"`
+	HTTPVersion         string    `json:"http_version"`
+	HostRecord          string    `json:"host_record"`
+	HTTPSSStatusCode    int       `json:"https_status_code"`
+	TotalTime           float64   `json:"total_time"`
+	DownloadSpeed       float64   `json:"download_speed"`
+	Domain              string    `json:"domain"`
+	IssuerOrganization  []string  `json:"issuer_organization"`
+	IssuerCommonName    string    `json:"issuer_common_name"`
+	SubjectCommonName   string    `json:"subject_common_name"`
+	IsExpired           bool      `json:"is_expired"`
+	IsReachable         bool      `json:"is_reachable"`
+	CertValidated       bool      `json:"certificate_validated,omitempty"`
+	CertValidationError string    `json:"certificate_validation_error,omitempty"`
 }
 
 type SSLCheckResult struct {
@@ -597,10 +591,10 @@ func websiteSpeed(url string, version string) (*WebsiteSpeedTestResult, error) {
 	return result, nil
 }
 
-func checkSSL(url string, version string) (*SSLCheckDetail, error) {
+func checkSSL(targetURL string, version string) (*SSLCheckDetail, error) {
 	ctx := context.Background()
 	var err error
-	ctx, err = ssrf.ValidateOutboundTarget(ctx, url)
+	ctx, err = ssrf.ValidateOutboundTarget(ctx, targetURL)
 	if err != nil {
 		return nil, err
 	}
@@ -611,20 +605,29 @@ func checkSSL(url string, version string) (*SSLCheckDetail, error) {
 	}
 
 	startTime := time.Now()
-	resp, err := client.R().EnableTrace().SetContext(ctx).Get(url)
+	resp, err := client.R().EnableTrace().SetContext(ctx).SetDoNotParseResponse(true).Get(targetURL)
 	if err != nil {
 		return nil, err
 	}
 	endTime := time.Now()
+	if resp.RawResponse != nil {
+		defer resp.RawResponse.Body.Close()
+	}
 
 	trace := resp.Request.TraceInfo()
 	hostRecord := cleanHostRecord(trace.RemoteAddr)
 
 	totalTime := float64(endTime.Sub(startTime).Milliseconds())
-	body := resp.Bytes()
+
+	// Do not download the response body for an SSL check; use Content-Length
+	// (when present) only for the speed estimate.
+	var pageSize int64
+	if contentLength := resp.Header().Get("Content-Length"); contentLength != "" {
+		pageSize, _ = strconv.ParseInt(contentLength, 10, 64)
+	}
 	var downloadSpeed float64
-	if totalTime > 0 {
-		downloadSpeed = float64(len(body)) / 1024.0 / (totalTime / 1000.0)
+	if totalTime > 0 && pageSize > 0 {
+		downloadSpeed = float64(pageSize) / 1024.0 / (totalTime / 1000.0)
 	}
 
 	rawResp := resp.RawResponse
@@ -647,21 +650,49 @@ func checkSSL(url string, version string) (*SSLCheckDetail, error) {
 		return nil, fmt.Errorf("no SSL certificate found")
 	}
 
+	// Actually validate the certificate chain and hostname against the system
+	// trust store, so self-signed/expired/mismatched certificates are reported
+	// honestly instead of being marked reachable-and-valid.
+	certValidated := false
+	var certValidationError string
+	parsedURL, parseErr := url.Parse(targetURL)
+	hostname := ""
+	if parseErr == nil {
+		hostname = parsedURL.Hostname()
+	}
+	if cert != nil && hostname != "" {
+		intermediates := x509.NewCertPool()
+		for _, intermediate := range rawResp.TLS.PeerCertificates[1:] {
+			intermediates.AddCert(intermediate)
+		}
+		if _, verifyErr := cert.Verify(x509.VerifyOptions{
+			DNSName:       hostname,
+			Intermediates: intermediates,
+			Roots:         systemCertPool(),
+		}); verifyErr != nil {
+			certValidationError = verifyErr.Error()
+		} else {
+			certValidated = true
+		}
+	}
+
 	result := &SSLCheckDetail{
-		CertValidityDays:   remainingDays,
-		IsExpired:          isExpired,
-		CertStartTime:      cert.NotBefore,
-		CertEndTime:        cert.NotAfter,
-		HTTPVersion:        resp.Proto(),
-		HostRecord:         hostRecord,
-		HTTPSSStatusCode:   resp.StatusCode(),
-		TotalTime:          totalTime,
-		DownloadSpeed:      downloadSpeed,
-		Domain:             domain,
-		IssuerOrganization: issuerOrganization,
-		IssuerCommonName:   issuerCommonName,
-		SubjectCommonName:  subjectCommonName,
-		IsReachable:        true,
+		CertValidityDays:    remainingDays,
+		IsExpired:           isExpired,
+		CertStartTime:       cert.NotBefore,
+		CertEndTime:         cert.NotAfter,
+		HTTPVersion:         resp.Proto(),
+		HostRecord:          hostRecord,
+		HTTPSSStatusCode:    resp.StatusCode(),
+		TotalTime:           totalTime,
+		DownloadSpeed:       downloadSpeed,
+		Domain:              domain,
+		IssuerOrganization:  issuerOrganization,
+		IssuerCommonName:    issuerCommonName,
+		SubjectCommonName:   subjectCommonName,
+		IsReachable:         true,
+		CertValidated:       certValidated,
+		CertValidationError: certValidationError,
 	}
 
 	return result, nil
@@ -677,20 +708,13 @@ func checkWebsiteHandler(c *gin.Context) {
 	}
 	testUrl := parsedURL.String()
 	if ssrf.HasLocalOrPrivateIP(parsedURL.Hostname()) {
-		c.JSON(200, &WebsiteCheckResult{
-			IPv4: fakePerfectWebsiteResult(testUrl),
-			IPv6: fakePerfectWebsiteResult(testUrl),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "private or internal addresses are not allowed"})
 		return
 	}
 
-	if cached, ok := websiteCache.Load(testUrl); ok {
-		entry := cached.(websiteCacheEntry)
-		if time.Since(entry.timestamp) < 5*time.Minute {
-			c.JSON(200, entry.result)
-			return
-		}
-		websiteCache.Delete(testUrl)
+	if cached, ok := websiteCache.Get(testUrl); ok {
+		c.JSON(200, cached)
+		return
 	}
 
 	rawResult, _, _ := sfGroup.Do("website:"+testUrl, func() (interface{}, error) {
@@ -753,7 +777,7 @@ func checkWebsiteHandler(c *gin.Context) {
 			wg.Wait()
 		}
 
-		websiteCache.Store(testUrl, websiteCacheEntry{result: result, timestamp: time.Now()})
+		websiteCache.Set(testUrl, result)
 
 		if (result.IPv4 != nil && !result.IPv4.IsReachable) || (result.IPv6 != nil && !result.IPv6.IsReachable) {
 			go func() {
@@ -802,13 +826,9 @@ func websiteSpeedTestHandler(c *gin.Context) {
 	cacheKey := fmt.Sprintf("%s:%s", url, version)
 
 	// 检查缓存
-	if cached, ok := speedCache.Load(cacheKey); ok {
-		entry := cached.(speedCacheEntry)
-		if time.Since(entry.timestamp) < 1*time.Minute {
-			c.JSON(200, entry.result)
-			return
-		}
-		speedCache.Delete(cacheKey)
+	if cached, ok := speedCache.Get(cacheKey); ok {
+		c.JSON(200, cached)
+		return
 	}
 
 	var result *WebsiteSpeedTestResult
@@ -821,14 +841,14 @@ func websiteSpeedTestHandler(c *gin.Context) {
 				errorResult := &WebsiteSpeedTestResult{
 					HostRecord: "Error: " + e.Error(),
 				}
-				speedCache.Store(cacheKey, speedCacheEntry{result: errorResult, timestamp: time.Now()})
+				speedCache.Set(cacheKey, errorResult)
 				go func() {
 					time.Sleep(30 * time.Second)
 					speedCache.Delete(cacheKey)
 				}()
 				return errorResult, nil
 			}
-			speedCache.Store(cacheKey, speedCacheEntry{result: r, timestamp: time.Now()})
+			speedCache.Set(cacheKey, r)
 			return r, nil
 		})
 		result = rawResult.(*WebsiteSpeedTestResult)
@@ -861,20 +881,13 @@ func sslCheckHandler(c *gin.Context) {
 	}
 	testUrl := parsedURL.String()
 	if ssrf.HasLocalOrPrivateIP(parsedURL.Hostname()) {
-		c.JSON(200, &SSLCheckResult{
-			IPv4: fakeInvalidSSLResult(parsedURL.Hostname()),
-			IPv6: fakeInvalidSSLResult(parsedURL.Hostname()),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "private or internal addresses are not allowed"})
 		return
 	}
 
-	if cached, ok := sslCache.Load(testUrl); ok {
-		entry := cached.(sslCacheEntry)
-		if time.Since(entry.timestamp) < 5*time.Minute {
-			c.JSON(200, entry.result)
-			return
-		}
-		sslCache.Delete(testUrl)
+	if cached, ok := sslCache.Get(testUrl); ok {
+		c.JSON(200, cached)
+		return
 	}
 
 	rawResult, _, _ := sfGroup.Do("ssl:"+testUrl, func() (interface{}, error) {
@@ -943,7 +956,7 @@ func sslCheckHandler(c *gin.Context) {
 			wg.Wait()
 		}
 
-		sslCache.Store(testUrl, sslCacheEntry{result: result, timestamp: time.Now()})
+		sslCache.Set(testUrl, result)
 
 		if (result.IPv4 != nil && !result.IPv4.IsReachable) || (result.IPv6 != nil && !result.IPv6.IsReachable) {
 			go func() {
@@ -1098,23 +1111,38 @@ func pingHandler(c *gin.Context) {
 	count := 4
 	if countStr := c.Query("count"); countStr != "" {
 		n, err := strconv.Atoi(countStr)
-		if err != nil || n < 1 || n > 20 {
+		if err != nil || n < 1 {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "count must be an integer between 1 and 20",
+				"error": "count must be a positive integer",
 			})
 			return
+		}
+		// Cap per-request attempts so a single request cannot tie up the
+		// service for minutes.
+		if n > 4 {
+			n = 4
 		}
 		count = n
 	}
 
+	// Per-IP rate limit and global concurrency guard keep TCPing from being
+	// abused as an unauthenticated port scanner / resource hog.
+	if !allowTcping(c.ClientIP()) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many tcping requests; please try again shortly"})
+		return
+	}
+	select {
+	case pingSem <- struct{}{}:
+		defer func() { <-pingSem }()
+	default:
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tcping service is busy; please try again"})
+		return
+	}
+
 	cacheKey := fmt.Sprintf("%s:%s:%d", host, port, count)
-	if cached, ok := pingCache.Load(cacheKey); ok {
-		entry := cached.(pingCacheEntry)
-		if time.Since(entry.timestamp) < 1*time.Minute {
-			c.JSON(200, entry.result)
-			return
-		}
-		pingCache.Delete(cacheKey)
+	if cached, ok := pingCache.Get(cacheKey); ok {
+		c.JSON(200, cached)
+		return
 	}
 
 	rawResult, _, _ := sfGroup.Do(cacheKey, func() (interface{}, error) {
@@ -1122,7 +1150,7 @@ func pingHandler(c *gin.Context) {
 
 		switch SINGLE_STACK {
 		case "ipv4":
-			ipv4, errV4 := webtest.TCPingRun(host, port, count, "v4", 10*time.Second, 100*time.Millisecond)
+			ipv4, errV4 := webtest.TCPingRun(c.Request.Context(), host, port, count, "v4", 3*time.Second, 100*time.Millisecond)
 			if errV4 != nil {
 				ipv4 = &webtest.TCPingStats{
 					IP: "Error: " + errV4.Error(),
@@ -1133,7 +1161,7 @@ func pingHandler(c *gin.Context) {
 				IP: "Skipped due to SINGLE_STACK=ipv4",
 			}
 		case "ipv6":
-			ipv6, errV6 := webtest.TCPingRun(host, port, count, "v6", 10*time.Second, 100*time.Millisecond)
+			ipv6, errV6 := webtest.TCPingRun(c.Request.Context(), host, port, count, "v6", 3*time.Second, 100*time.Millisecond)
 			if errV6 != nil {
 				ipv6 = &webtest.TCPingStats{
 					IP: "Error: " + errV6.Error(),
@@ -1149,7 +1177,7 @@ func pingHandler(c *gin.Context) {
 
 			go func() {
 				defer wg.Done()
-				ipv6, errV6 := webtest.TCPingRun(host, port, count, "v6", 10*time.Second, 100*time.Millisecond)
+				ipv6, errV6 := webtest.TCPingRun(c.Request.Context(), host, port, count, "v6", 3*time.Second, 100*time.Millisecond)
 				if errV6 != nil {
 					ipv6 = &webtest.TCPingStats{
 						IP: "Error: " + errV6.Error(),
@@ -1160,7 +1188,7 @@ func pingHandler(c *gin.Context) {
 
 			go func() {
 				defer wg.Done()
-				ipv4, errV4 := webtest.TCPingRun(host, port, count, "v4", 10*time.Second, 100*time.Millisecond)
+				ipv4, errV4 := webtest.TCPingRun(c.Request.Context(), host, port, count, "v4", 3*time.Second, 100*time.Millisecond)
 				if errV4 != nil {
 					ipv4 = &webtest.TCPingStats{
 						IP: "Error: " + errV4.Error(),
@@ -1172,7 +1200,7 @@ func pingHandler(c *gin.Context) {
 			wg.Wait()
 		}
 
-		pingCache.Store(cacheKey, pingCacheEntry{result: result, timestamp: time.Now()})
+		pingCache.Set(cacheKey, result)
 
 		ipv4Failed := result.IPv4 != nil && strings.HasPrefix(result.IPv4.IP, "Error:")
 		ipv6Failed := result.IPv6 != nil && strings.HasPrefix(result.IPv6.IP, "Error:")
@@ -1205,7 +1233,6 @@ func readConfig() {
 	DNS_SERVER = os.Getenv("DNS_SERVER")
 	IPDB = os.Getenv("IPDB")
 	CORS = os.Getenv("CORS")
-	KEYLESS_ORIGINS = os.Getenv("IPW_KEYLESS_ORIGINS")
 	ssrf.SetEnabled(os.Getenv("BLOCK_PRIVATE_IPS") != "false" && os.Getenv("BLOCK_PRIVATE_IPS") != "0")
 
 	// SINGLE_STACK is intentionally excluded: empty string is a valid value (dual-stack).
@@ -1234,9 +1261,6 @@ func readConfig() {
 	if CORS == "" {
 		CORS = viper.GetString("cors")
 	}
-	if KEYLESS_ORIGINS == "" {
-		KEYLESS_ORIGINS = viper.GetString("keyless-origins")
-	}
 	if PORTS == "" {
 		PORTS = "8080"
 	}
@@ -1247,7 +1271,6 @@ func readConfig() {
 			}
 		}
 	}
-	configureKeylessOrigins(KEYLESS_ORIGINS)
 	if BIND_ADDRESS == "" {
 		BIND_ADDRESS = "0.0.0.0"
 	}
@@ -1305,7 +1328,15 @@ func main() {
 		r.GET("/v1/security-headers/*url", securityHeadersHandler)
 		r.GET("/v1/ct-logs/:domain", ctLogHandler)
 	}
-	if err := r.Run(net.JoinHostPort(BIND_ADDRESS, PORTS)); err != nil {
+	server := &http.Server{
+		Addr:              net.JoinHostPort(BIND_ADDRESS, PORTS),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("Server failed to start", "error", err)
 	}
 }
