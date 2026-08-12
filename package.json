@@ -1,6 +1,6 @@
 {
-  "name": "ipw-cn-tdesign-react",
-  "private": true,
+  "name": "@kfcv50tk/ipw-cn-tdesign-react",
+  "private": false,
   "version": "0.1.0-rc8",
   "license": "GPL-3.0-only",
   "type": "module",
@@ -23,5 +23,11 @@
     "@types/node": "^22.10.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   }
 }
