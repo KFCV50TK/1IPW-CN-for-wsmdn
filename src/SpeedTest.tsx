@@ -3,7 +3,7 @@ import Card from 'tdesign-react/es/card'
 import Loading from 'tdesign-react/es/loading'
 import Select from 'tdesign-react/es/select'
 import Tag from 'tdesign-react/es/tag'
-import { CheckCircleIcon, ErrorCircleIcon, ThunderIcon } from 'tdesign-icons-react'
+import { CheckCircleIcon, ErrorCircleIcon, ThunderIcon, UploadIcon, DownloadIcon } from 'tdesign-icons-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 interface SpeedTestNode {
@@ -22,7 +22,8 @@ const speedTestNodes: SpeedTestNode[] = [
   { id: 'xian2', label: '中国 陕西 西安二 电信', path: '/xian2-node/' },
 ]
 
-const DEFAULT_PAYLOAD = 20 * 1024 * 1024
+const DOWNLOAD_SIZE = 20 * 1024 * 1024 // 20 MiB
+const UPLOAD_SIZE = 10 * 1024 * 1024 // 10 MiB
 const GAUGE_RADIUS = 110
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * GAUGE_RADIUS
 
@@ -42,6 +43,21 @@ function formatMbPerSec(mbps: number) {
   return `${(mbps / 8).toFixed(mbps >= 800 ? 0 : 2)} MB/s`
 }
 
+function randomBlob(size: number): Blob {
+  // crypto.getRandomValues only supports 65536 bytes per call.
+  const maxChunk = 64 * 1024
+  const parts: BlobPart[] = []
+  let remaining = size
+  while (remaining > 0) {
+    const n = Math.min(maxChunk, remaining)
+    const chunk = new Uint8Array(n)
+    crypto.getRandomValues(chunk)
+    parts.push(chunk)
+    remaining -= n
+  }
+  return new Blob(parts, { type: 'application/octet-stream' })
+}
+
 async function measureLatency(node: SpeedTestNode, timeoutMs = 6000): Promise<{ latency: number; ok: boolean }> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeoutMs)
@@ -56,7 +72,7 @@ async function measureLatency(node: SpeedTestNode, timeoutMs = 6000): Promise<{ 
   }
 }
 
-type TestStatus = 'probing' | 'ready' | 'testing' | 'done' | 'error'
+type TestStatus = 'probing' | 'ready' | 'downloading' | 'uploading' | 'done' | 'error'
 
 export function SpeedTestPage() {
   const [latencies, setLatencies] = useState<Record<string, number>>({})
@@ -64,7 +80,8 @@ export function SpeedTestPage() {
   const [status, setStatus] = useState<TestStatus>('probing')
   const [progress, setProgress] = useState(0)
   const [currentMbps, setCurrentMbps] = useState(0)
-  const [finalMbps, setFinalMbps] = useState(0)
+  const [downloadMbps, setDownloadMbps] = useState(0)
+  const [uploadMbps, setUploadMbps] = useState(0)
   const [error, setError] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
@@ -89,7 +106,8 @@ export function SpeedTestPage() {
   const probe = useCallback(async () => {
     setStatus('probing')
     setError('')
-    setFinalMbps(0)
+    setDownloadMbps(0)
+    setUploadMbps(0)
     setProgress(0)
     setCurrentMbps(0)
     const results = await Promise.all(speedTestNodes.map(async (node) => {
@@ -116,6 +134,51 @@ export function SpeedTestPage() {
     }
   }, [probe])
 
+  const runDownload = useCallback(async (node: SpeedTestNode) => {
+    const controller = new AbortController()
+    abortRef.current = controller
+    const response = await fetch(nodeUrl(node, `/v1/speedtest-payload?bytes=${DOWNLOAD_SIZE}`), {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) {
+      throw new Error(`下载测速请求失败（HTTP ${response.status}）`)
+    }
+    const reader = response.body.getReader()
+    let received = 0
+    const start = performance.now()
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      received += value ? value.length : 0
+      const seconds = (performance.now() - start) / 1000
+      const mbps = seconds > 0 ? (received * 8) / 1e6 / seconds : 0
+      setCurrentMbps(mbps)
+      setProgress(Math.min(received / DOWNLOAD_SIZE, 1))
+    }
+    const seconds = (performance.now() - start) / 1000
+    return seconds > 0 ? (received * 8) / 1e6 / seconds : 0
+  }, [])
+
+  const runUpload = useCallback(async (node: SpeedTestNode) => {
+    const controller = new AbortController()
+    abortRef.current = controller
+    const payload = randomBlob(UPLOAD_SIZE)
+    const start = performance.now()
+    const response = await fetch(nodeUrl(node, '/v1/speedtest-upload'), {
+      method: 'POST',
+      body: payload,
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    const seconds = (performance.now() - start) / 1000
+    if (!response.ok) {
+      throw new Error(`上传测速请求失败（HTTP ${response.status}）`)
+    }
+    return seconds > 0 ? (UPLOAD_SIZE * 8) / 1e6 / seconds : 0
+  }, [])
+
   const run = useCallback(async () => {
     const node = selectedNode
     if (!node) {
@@ -124,58 +187,41 @@ export function SpeedTestPage() {
       return
     }
     abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
-    setStatus('testing')
+    setStatus('downloading')
     setError('')
     setProgress(0)
     setCurrentMbps(0)
-    setFinalMbps(0)
+    setDownloadMbps(0)
+    setUploadMbps(0)
     try {
-      const response = await fetch(nodeUrl(node, `/v1/speedtest-payload?bytes=${DEFAULT_PAYLOAD}`), {
-        cache: 'no-store',
-        signal: controller.signal,
-      })
-      if (!response.ok || !response.body) {
-        throw new Error(`测速请求失败（HTTP ${response.status}）`)
-      }
-      const reader = response.body.getReader()
-      const total = DEFAULT_PAYLOAD
-      let received = 0
-      const start = performance.now()
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        received += value ? value.length : 0
-        const seconds = (performance.now() - start) / 1000
-        const mbps = seconds > 0 ? (received * 8) / 1e6 / seconds : 0
-        setCurrentMbps(mbps)
-        setProgress(Math.min(received / total, 1))
-      }
-      const seconds = (performance.now() - start) / 1000
-      const mbps = seconds > 0 ? (received * 8) / 1e6 / seconds : 0
-      setCurrentMbps(mbps)
-      setFinalMbps(mbps)
+      const download = await runDownload(node)
+      setDownloadMbps(download)
+      setProgress(1)
+
+      setStatus('uploading')
+      setProgress(0)
+      setCurrentMbps(0)
+      const upload = await runUpload(node)
+      setUploadMbps(upload)
       setProgress(1)
       setStatus('done')
     } catch (err) {
-      if (controller.signal.aborted) return
+      if (abortRef.current?.signal.aborted) return
       setStatus('error')
       setError(err instanceof Error ? err.message : '测速失败')
     }
-  }, [selectedNode])
+  }, [selectedNode, runDownload, runUpload])
 
   const latency = selectedNode ? latencies[selectedNode.id] : undefined
-  const displayMbps = status === 'testing' ? currentMbps : status === 'done' ? finalMbps : 0
-  const progressValue = status === 'testing' || status === 'done' ? progress : 0
+  const displayMbps = status === 'downloading' ? currentMbps : status === 'uploading' ? uploadMbps || 0 : status === 'done' ? downloadMbps : 0
+  const statusText = status === 'downloading' ? '下载测速中…' : status === 'uploading' ? '上传测速中…' : ''
 
   return (
     <Card className="section-card speedtest-card" bordered={false}>
       <div className="speedtest-head">
         <div>
           <h2 className="speedtest-title"><ThunderIcon /> 速度测试</h2>
-          <p className="speedtest-subtitle">自动选择距离你最近的节点，测试你的下行速度。</p>
+          <p className="speedtest-subtitle">自动选择距离你最近的节点，测试下行与上行速度。</p>
         </div>
         <div className="speedtest-actions">
           <Select
@@ -198,16 +244,16 @@ export function SpeedTestPage() {
               cx="130"
               cy="130"
               r={GAUGE_RADIUS}
-              className="speedtest-gauge-arc"
+              className={`speedtest-gauge-arc${status === 'uploading' ? ' is-uploading' : ''}`}
               strokeDasharray={`${GAUGE_CIRCUMFERENCE}`}
-              strokeDashoffset={GAUGE_CIRCUMFERENCE * (1 - progressValue)}
+              strokeDashoffset={GAUGE_CIRCUMFERENCE * (1 - progress)}
               transform="rotate(-90 130 130)"
             />
           </svg>
           <div className="speedtest-gauge-center">
             <strong>{status === 'probing' ? '—' : formatMbps(displayMbps)}</strong>
             <span>Mbps</span>
-            {status === 'testing' && <small className="speedtest-live">测速中…</small>}
+            {statusText && <small className="speedtest-live">{statusText}</small>}
           </div>
         </div>
 
@@ -231,10 +277,16 @@ export function SpeedTestPage() {
                 <span className="speedtest-meta-value">{latency !== undefined ? `${Math.round(latency)} ms` : '—'}</span>
               </div>
               {status === 'done' && (
-                <div className="speedtest-node-line">
-                  <span className="speedtest-meta-label">下载速度</span>
-                  <span className="speedtest-meta-value">{formatMbps(finalMbps)} Mbps（{formatMbPerSec(finalMbps)}）</span>
-                </div>
+                <>
+                  <div className="speedtest-node-line">
+                    <span className="speedtest-meta-label"><DownloadIcon /> 下载速度</span>
+                    <span className="speedtest-meta-value">{formatMbps(downloadMbps)} Mbps（{formatMbPerSec(downloadMbps)}）</span>
+                  </div>
+                  <div className="speedtest-node-line">
+                    <span className="speedtest-meta-label"><UploadIcon /> 上传速度</span>
+                    <span className="speedtest-meta-value">{formatMbps(uploadMbps)} Mbps（{formatMbPerSec(uploadMbps)}）</span>
+                  </div>
+                </>
               )}
             </>
           )}
@@ -245,12 +297,12 @@ export function SpeedTestPage() {
         <Button
           theme="primary"
           size="large"
-          loading={status === 'testing'}
+          loading={status === 'downloading' || status === 'uploading'}
           disabled={status === 'probing' || !selectedNode}
           onClick={() => void run()}
           icon={<ThunderIcon />}
         >
-          {status === 'done' ? '重新测速' : status === 'testing' ? '测速中' : '开始测速'}
+          {status === 'done' ? '重新测速' : status === 'downloading' || status === 'uploading' ? '测速中' : '开始测速'}
         </Button>
         {status === 'ready' || status === 'done' ? (
           <Button variant="text" onClick={() => void probe()}>重新探测节点</Button>

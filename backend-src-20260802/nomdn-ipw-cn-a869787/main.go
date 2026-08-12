@@ -1224,6 +1224,21 @@ func healchCheck(c *gin.Context) {
 	})
 }
 
+// speedtestUploadHandler receives and discards an uploaded payload so the
+// browser can measure real user-to-node upload speed.
+func speedtestUploadHandler(c *gin.Context) {
+	const maxUpload = 64 << 20 // 64 MiB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUpload)
+	start := time.Now()
+	received, err := io.Copy(io.Discard, c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "upload failed"})
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"received": received, "elapsed_ms": time.Since(start).Milliseconds()})
+}
+
 // speedtestPayloadHandler streams a fixed-size, non-compressible payload so
 // browsers can measure real user-to-node download speed (speedtest style).
 func speedtestPayloadHandler(c *gin.Context) {
@@ -1353,6 +1368,7 @@ func main() {
 
 	r.GET("/", healchCheck)
 	r.GET("/v1/speedtest-payload", speedtestPayloadHandler)
+	r.POST("/v1/speedtest-upload", speedtestUploadHandler)
 	r.GET("/v1/curl", curlIPHandler)
 	if IPDB != "false" {
 		r.GET("/v1/location/:ip", locateIP)
