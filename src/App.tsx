@@ -28,12 +28,14 @@ import {
   SearchIcon,
   SunnyIcon,
   TaskTimeIcon,
+  ThunderIcon,
 } from 'tdesign-icons-react'
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { firstAvailable, localApi, nodeApi } from './api'
 import { nodeStackLabel, sourceNodes, type SourceNode } from './nodes'
 const NetworkQueryPage = lazy(() => import('./NodeTools').then((module) => ({ default: module.NetworkQueryPage })))
+const SpeedTestPage = lazy(() => import('./SpeedTest').then((module) => ({ default: module.SpeedTestPage })))
 import type {
   DnsResult,
   HistoryItem,
@@ -49,7 +51,7 @@ import type {
 } from './types'
 
 type Theme = 'light' | 'dark'
-type ToolId = 'home' | 'location' | 'website' | 'ssl' | 'dns' | 'tcping' | 'speed' | 'network'
+type ToolId = 'home' | 'location' | 'website' | 'ssl' | 'dns' | 'tcping' | 'speed' | 'speedtest' | 'network'
 
 interface HistoryContextValue {
   history: HistoryItem[]
@@ -109,6 +111,7 @@ const toolItems: Array<{ value: ToolId; label: string; description: string; icon
   { value: 'dns', label: 'DNS 解析', description: 'A / AAAA / MX 等记录', icon: <RootListIcon />, path: '/dns' },
   { value: 'tcping', label: 'TCPing', description: '端口连接与延迟统计', icon: <TaskTimeIcon />, path: '/tcping' },
   { value: 'speed', label: '网站测速', description: '响应时间与下载速度', icon: <DataSearchIcon />, path: '/speed' },
+  { value: 'speedtest', label: '速度测试', description: '就近节点实时测速', icon: <ThunderIcon />, path: '/speedtest' },
   { value: 'network', label: '网络查询', description: 'HTTP、DNS 与链路诊断', icon: <FileSearchIcon />, path: '/network' },
 ]
 
@@ -170,6 +173,11 @@ function App() {
           <Route path="/dns" element={<DnsPage />} />
           <Route path="/tcping" element={<TcpingPage />} />
           <Route path="/speed" element={<SpeedPage />} />
+          <Route path="/speedtest" element={
+            <Suspense fallback={<div className="status-block"><Loading size="small" /> <span>正在加载速度测试…</span></div>}>
+              <SpeedTestPage />
+            </Suspense>
+          } />
           <Route path="/network" element={
             <Suspense fallback={<div className="status-block"><Loading size="small" /> <span>???????????</span></div>}>
               <NetworkQueryPage />

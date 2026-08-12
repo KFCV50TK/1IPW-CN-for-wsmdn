@@ -511,3 +511,164 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   .query-submit-row { display: grid; gap: 10px; }
   .query-batch-meter { margin-right: 0; text-align: center; }
 }
+
+
+/* ============ 速度测试 ============ */
+.speedtest-card .t-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.speedtest-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.speedtest-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--td-text-color-primary);
+}
+
+.speedtest-title svg {
+  color: var(--td-brand-color);
+}
+
+.speedtest-subtitle {
+  margin: 0;
+  color: var(--td-text-color-secondary);
+  font-size: 13px;
+}
+
+.speedtest-actions {
+  min-width: 260px;
+}
+
+.speedtest-node-select {
+  width: 100%;
+}
+
+.speedtest-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+  flex-wrap: wrap;
+  padding: 8px 0 4px;
+}
+
+.speedtest-gauge-wrap {
+  position: relative;
+  width: 260px;
+  height: 260px;
+}
+
+.speedtest-gauge {
+  width: 260px;
+  height: 260px;
+  display: block;
+}
+
+.speedtest-gauge-track {
+  fill: none;
+  stroke: var(--td-bg-color-component);
+  stroke-width: 14;
+}
+
+.speedtest-gauge-arc {
+  fill: none;
+  stroke: var(--td-brand-color);
+  stroke-width: 14;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.15s linear;
+}
+
+.speedtest-gauge-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.speedtest-gauge-center strong {
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--td-text-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.speedtest-gauge-center span {
+  font-size: 13px;
+  color: var(--td-text-color-secondary);
+}
+
+.speedtest-live {
+  color: var(--td-brand-color);
+  font-size: 12px;
+}
+
+.speedtest-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 260px;
+  max-width: 340px;
+}
+
+.speedtest-node-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--td-bg-color-component);
+  border-radius: var(--td-radius-default);
+}
+
+.speedtest-meta-label {
+  color: var(--td-text-color-secondary);
+  font-size: 13px;
+}
+
+.speedtest-meta-value {
+  color: var(--td-text-color-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.speedtest-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--td-error-color);
+  padding: 10px 14px;
+  background: var(--td-error-color-1);
+  border-radius: var(--td-radius-default);
+}
+
+.speedtest-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.speedtest-footer .t-button--size-large {
+  min-width: 180px;
+}
+
+.speedtest-ok {
+  color: var(--td-success-color);
+}

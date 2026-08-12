@@ -11,6 +11,7 @@ import (
 	"lemon-ipw/ssrf"
 	"lemon-ipw/webtest"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -1222,6 +1223,42 @@ func healchCheck(c *gin.Context) {
 		"status": "ok",
 	})
 }
+
+// speedtestPayloadHandler streams a fixed-size, non-compressible payload so
+// browsers can measure real user-to-node download speed (speedtest style).
+func speedtestPayloadHandler(c *gin.Context) {
+	size := int64(20 << 20) // 20 MiB default
+	if raw := strings.TrimSpace(c.Query("bytes")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1<<20 || parsed > 64<<20 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bytes must be between 1 MiB and 64 MiB"})
+			return
+		}
+		size = parsed
+	}
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Length", strconv.FormatInt(size, 10))
+	c.Header("Cache-Control", "no-store")
+	// Deterministic pseudo-random data: not compressible, so proxies cannot
+	// inflate the measured speed.
+	rng := rand.New(rand.NewSource(0x1d37))
+	buffer := make([]byte, 128*1024)
+	written := int64(0)
+	for written < size {
+		chunk := len(buffer)
+		if remaining := size - written; int64(chunk) > remaining {
+			chunk = int(remaining)
+		}
+		if _, err := rng.Read(buffer[:chunk]); err != nil {
+			break
+		}
+		n, err := c.Writer.Write(buffer[:chunk])
+		if err != nil {
+			break
+		}
+		written += int64(n)
+	}
+}
 func readConfig() {
 	PORTS = os.Getenv("PORTS")
 	BIND_ADDRESS = strings.TrimSpace(os.Getenv("BIND_ADDRESS"))
@@ -1315,6 +1352,7 @@ func main() {
 	r.GET("/v1/speed/:version", websiteSpeedRouteHandler)
 
 	r.GET("/", healchCheck)
+	r.GET("/v1/speedtest-payload", speedtestPayloadHandler)
 	r.GET("/v1/curl", curlIPHandler)
 	if IPDB != "false" {
 		r.GET("/v1/location/:ip", locateIP)
