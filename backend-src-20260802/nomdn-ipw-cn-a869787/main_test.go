@@ -284,3 +284,18 @@ func TestSecurityHeadersRejectsPrivateTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeURLCollapsedScheme(t *testing.T) {
+	for input, want := range map[string]string{
+		"https:/example.com":    "https://example.com",
+		"http:/example.com":     "http://example.com",
+		"example.com":           "https://example.com",
+		"/https:/example.com/p": "https://example.com/p",
+		"//example.com":         "https://example.com",
+		"https://example.com":   "https://example.com",
+	} {
+		if got := normalizeURL(input); got != want {
+			t.Errorf("normalizeURL(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

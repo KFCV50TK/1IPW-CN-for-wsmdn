@@ -381,13 +381,7 @@ func cdnDetectHandler(c *gin.Context) {
 }
 
 func extractHost(urlStr string) string {
-	normalized := strings.TrimSpace(urlStr)
-	if normalized == "" {
-		return ""
-	}
-	if !strings.Contains(normalized, "://") {
-		normalized = "https://" + normalized
-	}
+	normalized := normalizeURL(strings.TrimSpace(urlStr))
 	parsed, err := url.Parse(normalized)
 	if err != nil || parsed.Hostname() == "" {
 		return ""
@@ -475,9 +469,9 @@ func securityHeadersHandler(c *gin.Context) {
 		return
 	}
 
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-		urlStr = "https://" + urlStr
-	}
+	// Some proxies collapse the second slash of a legacy wildcard URL
+	// ("https:/example.com"); normalizeURL restores the scheme before parsing.
+	urlStr = normalizeURL(urlStr)
 
 	parsed, err := url.Parse(urlStr)
 	if err != nil || parsed.Hostname() == "" {
