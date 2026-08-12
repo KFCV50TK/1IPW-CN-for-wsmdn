@@ -2,7 +2,7 @@
 
 1IPW.CN 是一个面向 IP、DNS、网络连通性和网站安全检测的开源工具站。本仓库包含 React/TDesign 前端，以及基于 [nomdn/ipw-cn](https://github.com/nomdn/ipw-cn) 扩展的 Go 后端。
 
-项目目前尚未确定正式版本号，`package.json` 暂使用 `0.0.0`，不代表稳定版本发布。
+当前版本：`0.1.0-rc8`（预发布候选版本）。
 
 ## 主要能力
 
