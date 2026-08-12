@@ -179,7 +179,7 @@ function App() {
             </Suspense>
           } />
           <Route path="/network" element={
-            <Suspense fallback={<div className="status-block"><Loading size="small" /> <span>???????????</span></div>}>
+            <Suspense fallback={<div className="status-block"><Loading size="small" /> <span>正在加载网络查询工具…</span></div>}>
               <NetworkQueryPage />
             </Suspense>
           } />
