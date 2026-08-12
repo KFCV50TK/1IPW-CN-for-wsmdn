@@ -1227,7 +1227,7 @@ func healchCheck(c *gin.Context) {
 // speedtestUploadHandler receives and discards an uploaded payload so the
 // browser can measure real user-to-node upload speed.
 func speedtestUploadHandler(c *gin.Context) {
-	const maxUpload = 64 << 20 // 64 MiB
+	const maxUpload = 512 << 20 // 512 MiB
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUpload)
 	start := time.Now()
 	received, err := io.Copy(io.Discard, c.Request.Body)
@@ -1245,8 +1245,8 @@ func speedtestPayloadHandler(c *gin.Context) {
 	size := int64(20 << 20) // 20 MiB default
 	if raw := strings.TrimSpace(c.Query("bytes")); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || parsed < 1<<20 || parsed > 64<<20 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bytes must be between 1 MiB and 64 MiB"})
+		if err != nil || parsed < 1<<20 || parsed > 512<<20 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bytes must be between 1 MiB and 512 MiB"})
 			return
 		}
 		size = parsed
