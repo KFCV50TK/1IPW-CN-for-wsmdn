@@ -62,9 +62,20 @@ export default defineConfig(({ mode }) => {
       // React 与 TDesign 版本稳定，拆成独立 chunk 后业务代码更新不会让用户重下这部分。
       rollupOptions: {
         output: {
-          manualChunks: {
-            react: ['react', 'react-dom', 'react-router-dom'],
-            tdesign: ['tdesign-react', 'tdesign-icons-react'],
+          // ?????????????????? TDesign ????? tdesign chunk?
+          // ????????????????????????? CSS ?????
+          manualChunks(id) {
+            if (id.includes('node_modules/tdesign-react/es/') || id.includes('node_modules/tdesign-icons-react/')) {
+              return 'tdesign'
+            }
+            if (
+              id.includes('node_modules/react') ||
+              id.includes('node_modules/react-dom') ||
+              id.includes('node_modules/react-router')
+            ) {
+              return 'react'
+            }
+            return undefined
           },
         },
       },

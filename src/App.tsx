@@ -1,17 +1,15 @@
-import {
-  Alert,
-  Button,
-  Card,
-  Empty,
-  Input,
-  Layout,
-  Loading,
-  Menu,
-  Progress,
-  Select,
-  Table,
-  Tag,
-} from 'tdesign-react'
+import Alert from 'tdesign-react/es/alert'
+import Button from 'tdesign-react/es/button'
+import Card from 'tdesign-react/es/card'
+import Empty from 'tdesign-react/es/empty'
+import Input from 'tdesign-react/es/input'
+import Layout from 'tdesign-react/es/layout'
+import Loading from 'tdesign-react/es/loading'
+import Menu from 'tdesign-react/es/menu'
+import Progress from 'tdesign-react/es/progress'
+import Select from 'tdesign-react/es/select'
+import Table from 'tdesign-react/es/table'
+import Tag from 'tdesign-react/es/tag'
 import {
   CertificateIcon,
   CheckCircleIcon,
@@ -31,11 +29,11 @@ import {
   SunnyIcon,
   TaskTimeIcon,
 } from 'tdesign-icons-react'
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react'
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { firstAvailable, localApi, nodeApi } from './api'
 import { nodeStackLabel, sourceNodes, type SourceNode } from './nodes'
-import { NetworkQueryPage } from './NodeTools'
+const NetworkQueryPage = lazy(() => import('./NodeTools').then((module) => ({ default: module.NetworkQueryPage })))
 import type {
   DnsResult,
   HistoryItem,
@@ -172,7 +170,11 @@ function App() {
           <Route path="/dns" element={<DnsPage />} />
           <Route path="/tcping" element={<TcpingPage />} />
           <Route path="/speed" element={<SpeedPage />} />
-          <Route path="/network" element={<NetworkQueryPage />} />
+          <Route path="/network" element={
+            <Suspense fallback={<div className="status-block"><Loading size="small" /> <span>???????????</span></div>}>
+              <NetworkQueryPage />
+            </Suspense>
+          } />
           <Route path="/email" element={<Navigate to="/network?kind=email" replace />} />
           <Route path="/rbl" element={<Navigate to="/network?kind=rbl" replace />} />
           <Route path="/cdn" element={<Navigate to="/network?kind=cdn" replace />} />

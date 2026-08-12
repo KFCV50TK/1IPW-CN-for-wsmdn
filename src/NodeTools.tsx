@@ -1,4 +1,11 @@
-import { Alert, Button, Card, Input, Loading, Select, Tag, Textarea } from 'tdesign-react'
+import Alert from 'tdesign-react/es/alert'
+import Button from 'tdesign-react/es/button'
+import Card from 'tdesign-react/es/card'
+import Input from 'tdesign-react/es/input'
+import Loading from 'tdesign-react/es/loading'
+import Select from 'tdesign-react/es/select'
+import Tag from 'tdesign-react/es/tag'
+import Textarea from 'tdesign-react/es/textarea'
 import {
   CheckCircleIcon,
   ErrorCircleIcon,

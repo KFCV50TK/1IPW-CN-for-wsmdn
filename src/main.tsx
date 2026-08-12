@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
-import { ConfigProvider } from 'tdesign-react'
+import ConfigProvider from 'tdesign-react/es/config-provider'
 import zhCN from 'tdesign-react/es/locale/zh_CN'
 import App from './App'
 import 'tdesign-react/es/style/index.css'
