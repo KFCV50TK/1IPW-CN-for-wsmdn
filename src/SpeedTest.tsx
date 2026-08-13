@@ -190,22 +190,26 @@ export function SpeedTestPage() {
       () => undefined,
       (samples) => setDownloadSamples([...samples]),
     )
-    // 固定时长：15 秒后强制停止下载流，进入下一阶段。
+    // 固定时长：15 秒内持续拉取载荷。高速节点提前传完一个载荷就继续拉下一个，
+    // 直到 15 秒整（到时主动 abort）。
     const timer = window.setTimeout(() => controller.abort(), TEST_DURATION_MS)
     try {
-      const response = await fetch(nodeUrl(node, `/v1/speedtest-payload?bytes=${DOWNLOAD_BYTES}`), {
-        cache: 'no-store',
-        signal: controller.signal,
-      })
-      if (!response.ok || !response.body) {
-        throw new Error(`下载测速请求失败（HTTP ${response.status}）`)
-      }
-      const reader = response.body.getReader()
       // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        received += value ? value.length : 0
+      while (performance.now() - start < TEST_DURATION_MS) {
+        const response = await fetch(nodeUrl(node, `/v1/speedtest-payload?bytes=${DOWNLOAD_BYTES}`), {
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+        if (!response.ok || !response.body) {
+          throw new Error(`下载测速请求失败（HTTP ${response.status}）`)
+        }
+        const reader = response.body.getReader()
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          received += value ? value.length : 0
+        }
       }
     } catch (err) {
       // 15 秒到后主动中断下载流属于正常结束
@@ -216,18 +220,6 @@ export function SpeedTestPage() {
       window.clearTimeout(timer)
       sampler.stop()
       controller.abort()
-    }
-    // 流提前结束时，补齐剩余采样为 0
-    const elapsed = performance.now() - start
-    if (elapsed < TEST_DURATION_MS) {
-      const samples = sampler.samples
-      let t = elapsed
-      while (t < TEST_DURATION_MS) {
-        t += 1000
-        samples.push({ t: Math.min(t, TEST_DURATION_MS), mbps: 0 })
-      }
-      setDownloadSamples([...samples])
-      setElapsedMs(Math.min(elapsed, TEST_DURATION_MS))
     }
     setCurrentMbps(0)
     return (received * 8) / 1e6 / (TEST_DURATION_MS / 1000)
@@ -244,44 +236,42 @@ export function SpeedTestPage() {
       () => undefined,
       (samples) => setUploadSamples([...samples]),
     )
-    // XHR 的 upload.onprogress 提供真实已发送字节数；fetch 流式上传没有
-    // 进度事件，会因背压/缓冲导致数值虚高或卡 0。
-    const result = await new Promise<number>((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-      xhr.open('POST', nodeUrl(node, '/v1/speedtest-upload'))
-      xhr.setRequestHeader('Content-Type', 'application/octet-stream')
-      let settled = false
-      let timer = 0
-      const finish = (ok: boolean, err?: Error) => {
-        if (settled) return
-        settled = true
-        window.clearTimeout(timer)
-        sampler.stop()
-        const seconds = (performance.now() - start) / 1000 || 0.001
-        const mbps = (sent * 8) / 1e6 / seconds
-        if (ok) resolve(mbps)
-        else reject(err || new Error('上传测速请求失败'))
+    // 固定时长：15 秒内持续上传。一份载荷传完（高速节点可能很快）就继续传下一份，
+    // 直到 15 秒整（到时 abort 当前请求）。
+    const currentXhrRef: { current: XMLHttpRequest | null } = { current: null }
+    const timer = window.setTimeout(() => {
+      try { currentXhrRef.current?.abort() } catch { /* ignore */ }
+    }, TEST_DURATION_MS)
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (performance.now() - start < TEST_DURATION_MS) {
+        const baseSent = sent
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          currentXhrRef.current = xhr
+          xhr.open('POST', nodeUrl(node, '/v1/speedtest-upload'))
+          xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+          xhr.upload.onprogress = (event) => {
+            if (event.loaded > 0) sent = baseSent + event.loaded
+          }
+          xhr.onload = () => resolve()
+          xhr.onabort = () => resolve() // 15 秒到主动终止，按已发送字节计算
+          xhr.onerror = () => reject(new Error('上传测速请求失败'))
+          try {
+            xhr.send(payload)
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error('上传测速请求失败'))
+          }
+        })
+        sent = baseSent + payload.size
       }
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable || event.loaded > 0) {
-          sent = event.loaded
-        }
-      }
-      xhr.onload = () => finish(true)
-      xhr.onabort = () => finish(true) // 15 秒到主动终止，按已发送字节计算
-      xhr.onerror = () => finish(false)
-      // 固定时长：15 秒后终止上传，保证流程必然完成。
-      timer = window.setTimeout(() => {
-        try { xhr.abort() } catch { /* ignore */ }
-      }, TEST_DURATION_MS)
-      try {
-        xhr.send(payload)
-      } catch (err) {
-        finish(false, err instanceof Error ? err : new Error('上传测速请求失败'))
-      }
-    })
+    } finally {
+      window.clearTimeout(timer)
+      sampler.stop()
+      try { currentXhrRef.current?.abort() } catch { /* ignore */ }
+    }
     setCurrentMbps(0)
-    return result
+    return (sent * 8) / 1e6 / (TEST_DURATION_MS / 1000)
   }, [startSampler])
 
   const run = useCallback(async () => {

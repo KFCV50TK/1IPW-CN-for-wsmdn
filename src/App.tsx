@@ -138,7 +138,9 @@ function useHistoryStore(): HistoryContextValue {
 
 function currentTool(pathname: string): ToolId {
   if (pathname === '/') return 'home'
-  const match = toolItems.find((item) => item.path !== '/' && pathname.startsWith(item.path))
+  const exact = toolItems.find((item) => item.path !== '/' && item.path === pathname)
+  if (exact) return exact.value
+  const match = toolItems.find((item) => item.path !== '/' && pathname.startsWith(item.path + '/'))
   return match?.value || 'home'
 }
 
