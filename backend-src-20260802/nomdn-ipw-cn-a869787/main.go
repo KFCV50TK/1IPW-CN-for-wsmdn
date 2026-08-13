@@ -1386,8 +1386,8 @@ func main() {
 		Addr:              net.JoinHostPort(BIND_ADDRESS, PORTS),
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second,
+		ReadTimeout:       180 * time.Second,
+		WriteTimeout:      300 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

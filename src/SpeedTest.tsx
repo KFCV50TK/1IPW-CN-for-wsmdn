@@ -26,7 +26,7 @@ const speedTestNodes: SpeedTestNode[] = [
 const TEST_DURATION_MS = 15_000 // 每阶段固定 15 秒
 const DOWNLOAD_BYTES = 300 * 1024 * 1024 // 足够 15 秒高速下载的载荷
 const UPLOAD_CHUNK = 64 * 1024 // crypto.getRandomValues 单次上限 64KB
-const UPLOAD_SIZE = 256 * 1024 * 1024 // 256 MiB，供 15 秒高速上传
+const UPLOAD_SIZE = 8 * 1024 * 1024 // 8 MiB/份（兼容 CF/代理上传时限），循环续传满 15 秒
 const GAUGE_RADIUS = 110
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * GAUGE_RADIUS
 
