@@ -863,9 +863,32 @@ func websiteSpeedTestHandler(c *gin.Context) {
 	c.JSON(200, result)
 }
 
+// bearerTokenFromAuthorization 从 Authorization: Bearer <TOKEN> 请求头中提取 TOKEN。
+// 若请求头不存在或不是 Bearer 格式,返回空字符串。
+func bearerTokenFromAuthorization(c *gin.Context) string {
+	value := strings.TrimSpace(c.GetHeader("Authorization"))
+	if len(value) > 7 && strings.EqualFold(value[:7], "Bearer ") {
+		return strings.TrimSpace(value[7:])
+	}
+	return ""
+}
+
+// requireSpeedAPIKey 校验网站测速接口的访问凭证,任一方式通过即可:
+//  1. 新增方式:Authorization: Bearer <TOKEN>,TOKEN 与环境变量 IPW_SPEED_API_KEY 一致;
+//  2. 原有方式:节点 API 密钥(sk-ipw-*,经 node_keys.json 校验,requireNodeKey)。
+func requireSpeedAPIKey(c *gin.Context) bool {
+	expected := strings.TrimSpace(os.Getenv("IPW_SPEED_API_KEY"))
+	if expected != "" {
+		if token := bearerTokenFromAuthorization(c); token != "" && secureStringEqual(token, expected) {
+			return true
+		}
+	}
+	return requireNodeKey(c)
+}
+
 func websiteSpeedRouteHandler(c *gin.Context) {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("IPW_SPEED_API_KEY_REQUIRED")), "true") {
-		if !requireNodeKey(c) {
+		if !requireSpeedAPIKey(c) {
 			return
 		}
 	}
@@ -1370,6 +1393,13 @@ func main() {
 	r.GET("/v1/speedtest-payload", speedtestPayloadHandler)
 	r.POST("/v1/speedtest-upload", speedtestUploadHandler)
 	r.GET("/v1/curl", curlIPHandler)
+
+	// 与上游 ipw-cn 兼容的公开 GET 接口（middleware-go 可无缝转发）
+	// whois / dnssec 与上游 GET 路由一致；asn 查不到时仅返回 {"ip": ...}
+	r.GET("/v1/dnssec/:domain", publicDNSSECHandler)
+	r.GET("/v1/whois/:domain", publicWhoisHandler)
+	r.GET("/v1/asn/:ip", publicASNLookupHandler)
+
 	if IPDB != "false" {
 		r.GET("/v1/location/:ip", locateIP)
 		r.GET("/v1/location", locateUserIP)
