@@ -20,6 +20,7 @@ const speedTestNodes: SpeedTestNode[] = [
   { id: 'zaozhuang', label: '中国 山东 枣庄 移动/电信双线', path: '/manage-node/zaozhuang/' },
   { id: 'hongkong', label: '中国 香港 Cogent', path: '/manage-node/hongkong/' },
   { id: 'xian2', label: '中国 陕西 西安二 电信', path: '/xian2-node/' },
+  { id: 'huawei', label: '中国 华为云 北京', path: '/huawei-node/' },
 ]
 
 const TEST_DURATION_MS = 15_000 // 每阶段固定 15 秒

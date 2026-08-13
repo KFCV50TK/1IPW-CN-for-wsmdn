@@ -84,6 +84,13 @@ const jdCloudBGP: SourceNode = {
   stack: 'v4',
 }
 
+const huawei: SourceNode = {
+  id: 'cn-beijing-huawei-go',
+  label: '中国 华为云 北京',
+  url: '/huawei-node/',
+  stack: 'v4',
+}
+
 const sichuan: SourceNode = {
   id: 'cn-sichuan-telecom',
   label: '中国 四川 沙渠 电信[ZFC]',
@@ -101,7 +108,7 @@ const hongKong: SourceNode = {
 const dualStackNodes = [jiangsu, shenzhen] as const
 const ipv4Nodes = [guangzhou, singapore, xian] as const
 const ipv6Nodes = [sichuan, hongKong] as const
-const extraIpv4Nodes = [natSpeedNode, hongKongDedicatedNode, xian2, shiyan, hongKongVpsQuan, jdCloudBGP] as const
+const extraIpv4Nodes = [natSpeedNode, hongKongDedicatedNode, xian2, shiyan, hongKongVpsQuan, jdCloudBGP, huawei] as const
 
 export const sourceNodes = {
   core: [...dualStackNodes],

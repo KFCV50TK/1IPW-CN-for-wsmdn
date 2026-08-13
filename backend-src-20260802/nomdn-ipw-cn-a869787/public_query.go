@@ -144,6 +144,7 @@ func newPublicQueryProxy() *publicQueryProxy {
 		{"shiyan", "中国 湖北 十堰 电信", "IPW_PUBLIC_NODE_SHIYAN"},
 		{"hongkong2", "中国 香港 VpsQuan", "IPW_PUBLIC_NODE_HONGKONG2"},
 		{"jdcloud", "中国 北京 京东云 三网BGP", "IPW_PUBLIC_NODE_JDCLOUD"},
+		{"huawei", "中国 华为云 北京", "IPW_PUBLIC_NODE_HUAWEI"},
 	}
 	for _, item := range configured {
 		if node, ok := publicNodeFromEnv(item.id, item.label, item.env); ok {
