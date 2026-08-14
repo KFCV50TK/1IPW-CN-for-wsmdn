@@ -115,10 +115,17 @@ func (s *keyStore) valid(value string) bool {
 	return false
 }
 
-func bearerToken(c *gin.Context) string {
+func authorizationBearer(c *gin.Context) string {
 	value := strings.TrimSpace(c.GetHeader("Authorization"))
 	if len(value) > 7 && strings.EqualFold(value[:7], "Bearer ") {
 		return strings.TrimSpace(value[7:])
+	}
+	return ""
+}
+
+func bearerToken(c *gin.Context) string {
+	if value := authorizationBearer(c); value != "" {
+		return value
 	}
 	return strings.TrimSpace(c.GetHeader("X-IPW-Admin-Token"))
 }
@@ -134,6 +141,19 @@ func requireNodeKey(c *gin.Context) bool {
 func limitNodeBody(maxBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Next()
+	}
+}
+
+func requireNodeKeyMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodOptions {
+			c.Next()
+			return
+		}
+		if !requireNodeKey(c) {
+			return
+		}
 		c.Next()
 	}
 }
@@ -840,9 +860,6 @@ func queryWhois(server, domain string) (string, error) {
 }
 
 func registerNodeAPIRoutes(r *gin.Engine) {
-	if err := initKeyStore(); err != nil {
-		panic(err)
-	}
 	register := func(prefix string) {
 		admin := r.Group(prefix+"/admin", limitNodeBody(maxHTTPBody))
 		admin.GET("/keys", listKeysHandler)

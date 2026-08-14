@@ -172,3 +172,17 @@ docker run -p 8080:8080 -v $(pwd)/setting.json:/app/setting.json lemon-ipw
 ## 许可证
 
 [GPL-3.0](../../LICENSE)
+
+## Backend API authentication
+
+Except for `GET /` and `GET /v1/curl`, backend API routes require the same
+node API key used by the distributed probe nodes:
+
+```http
+Authorization: Bearer sk-ipw-...
+```
+
+Keys are loaded from `IPW_API_KEY_STORE` (default: `node_keys.json`) even when
+`IPW_NODE_API_ENABLED=false`. A main-site reverse proxy should inject the
+shared key from a server-only configuration file; never expose it in browser
+code or commit it to the repository.

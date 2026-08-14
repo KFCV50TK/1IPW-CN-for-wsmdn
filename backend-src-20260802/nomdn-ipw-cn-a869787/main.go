@@ -1329,6 +1329,41 @@ func readConfig() {
 	slog.Info("SSRF protection initialized", "blockPrivateIPs", ssrf.Enabled())
 }
 
+func registerLegacyAPIRoutes(r gin.IRouter) {
+	registerPublicQueryRoutes(r)
+
+	r.GET("/v1/detail/*url", checkWebsiteHandler)
+	r.GET("/v1/detail", checkWebsiteHandler)
+	r.GET("/v1/ssl/*url", sslCheckHandler)
+	r.GET("/v1/ssl", sslCheckHandler)
+	r.GET("/v1/tcping/:ip", pingHandler)
+	r.GET("/v1/dns/:type/*domain", dnsQueryHandler)
+	r.GET("/v1/speed/:version/*url", websiteSpeedRouteHandler)
+	r.GET("/v1/speed/:version", websiteSpeedRouteHandler)
+	r.GET("/v1/speedtest-payload", speedtestPayloadHandler)
+	r.POST("/v1/speedtest-upload", speedtestUploadHandler)
+	if IPDB != "false" {
+		r.GET("/v1/location/:ip", locateIP)
+		r.GET("/v1/location", locateUserIP)
+		r.GET("/v1/email-security/:domain", emailSecurityHandler)
+		r.GET("/v1/rbl/:ip", rblCheckHandler)
+		r.GET("/v1/cdn/*url", cdnDetectHandler)
+		r.POST("/v1/batch-location", batchLocationHandler)
+		r.GET("/v1/security-headers/*url", securityHeadersHandler)
+		r.GET("/v1/ct-logs/:domain", ctLogHandler)
+	}
+}
+
+func registerApplicationRoutes(r *gin.Engine) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("IPW_NODE_API_ENABLED")), "false") {
+		registerNodeAPIRoutes(r)
+	}
+	protectedAPI := r.Group("", requireNodeKeyMiddleware())
+	registerLegacyAPIRoutes(protectedAPI)
+	r.GET("/", healchCheck)
+	r.GET("/v1/curl", curlIPHandler)
+}
+
 func main() {
 	readConfig()
 	webtest.SetDNSServer(DNS_SERVER)
@@ -1351,37 +1386,10 @@ func main() {
 	} else {
 		r.Use(cors.Default())
 	}
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("IPW_NODE_API_ENABLED")), "false") {
-		registerNodeAPIRoutes(r)
+	if err := initKeyStore(); err != nil {
+		panic(err)
 	}
-	registerPublicQueryRoutes(r)
-
-	r.GET("/v1/detail/*url", checkWebsiteHandler)
-	r.GET("/v1/detail", checkWebsiteHandler)
-	r.GET("/v1/ssl/*url", sslCheckHandler)
-	r.GET("/v1/ssl", sslCheckHandler)
-
-	r.GET("/v1/tcping/:ip", pingHandler)
-	r.GET("/v1/dns/:type/*domain", dnsQueryHandler)
-	r.GET("/v1/speed/:version/*url", websiteSpeedRouteHandler)
-	r.GET("/v1/speed/:version", websiteSpeedRouteHandler)
-
-	r.GET("/", healchCheck)
-	r.GET("/v1/speedtest-payload", speedtestPayloadHandler)
-	r.POST("/v1/speedtest-upload", speedtestUploadHandler)
-	r.GET("/v1/curl", curlIPHandler)
-	if IPDB != "false" {
-		r.GET("/v1/location/:ip", locateIP)
-		r.GET("/v1/location", locateUserIP)
-
-		// extra feature routes
-		r.GET("/v1/email-security/:domain", emailSecurityHandler)
-		r.GET("/v1/rbl/:ip", rblCheckHandler)
-		r.GET("/v1/cdn/*url", cdnDetectHandler)
-		r.POST("/v1/batch-location", batchLocationHandler)
-		r.GET("/v1/security-headers/*url", securityHeadersHandler)
-		r.GET("/v1/ct-logs/:domain", ctLogHandler)
-	}
+	registerApplicationRoutes(r)
 	server := &http.Server{
 		Addr:              net.JoinHostPort(BIND_ADDRESS, PORTS),
 		Handler:           r,

@@ -159,6 +159,64 @@ func TestWebsiteSpeedRouteCanRequireNodeKey(t *testing.T) {
 	}
 }
 
+func TestApplicationRoutesUseSharedNodeKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("IPW_NODE_API_ENABLED", "false")
+
+	const validKey = "sk-ipw-shared-route-test"
+	originalNodeKeys := nodeKeys
+	nodeKeys = &keyStore{keys: []nodeAPIKey{{
+		ID:   "shared-route-test",
+		Name: "shared route test",
+		Hash: hashAPIKey(validKey),
+	}}}
+	t.Cleanup(func() { nodeKeys = originalNodeKeys })
+
+	router := gin.New()
+	registerApplicationRoutes(router)
+
+	tests := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "missing key", wantStatus: http.StatusUnauthorized},
+		{name: "invalid key", authorization: "Bearer sk-ipw-invalid", wantStatus: http.StatusUnauthorized},
+		{name: "valid shared key", authorization: "Bearer " + validKey, wantStatus: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/speedtest-upload", http.NoBody)
+			if test.authorization != "" {
+				request.Header.Set("Authorization", test.authorization)
+			}
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, test.wantStatus, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestApplicationRoutesKeepHealthAndCurlPublic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("IPW_NODE_API_ENABLED", "false")
+
+	router := gin.New()
+	registerApplicationRoutes(router)
+
+	for _, path := range []string{"/", "/v1/curl"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.RemoteAddr = "192.0.2.10:12345"
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200; body = %s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestRequestURLFromQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

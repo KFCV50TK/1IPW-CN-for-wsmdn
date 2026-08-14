@@ -291,7 +291,7 @@ func (proxy *publicQueryProxy) run(c *gin.Context) {
 	c.Data(response.StatusCode, "application/json; charset=utf-8", responseBody)
 }
 
-func registerPublicQueryRoutes(r *gin.Engine) {
+func registerPublicQueryRoutes(r gin.IRouter) {
 	proxy := newPublicQueryProxy()
 	if len(proxy.nodes) == 0 {
 		return
