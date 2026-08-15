@@ -355,8 +355,13 @@ var (
 	sfGroup        singleflight.Group
 	V6Client       *resty.Client
 	V4Client       *resty.Client
-	IPDB           string
-	CORS           string
+	IPDB string
+	CORS string
+	// ACCESS_TOKEN 是全后端唯一的鉴权令牌（RFC 6750 Bearer）。
+	// 查询族（GET /v1/*）与探测族（POST /v1/http-test 等）共用；
+	// public-query 代理转发到各节点时也带它。
+	// 留空则全部开放 —— 上游 rc7.1 的默认行为，兼容匿名节点。
+	ACCESS_TOKEN  string
 	ACCEPT_DOMAINS []string
 )
 
@@ -426,8 +431,9 @@ type WebsiteSpeedTestResult struct {
 // Business Endpoints
 // 业务端点
 
-func checkWebsite(url string, version string) (*WebsiteCheckDetail, error) {
-	ctx := context.Background()
+// checkWebsite 探测网站可达性。ctx 来自请求：客户端断开时探测随之取消，
+// 不再白跑满超时（Background 版本的问题）。
+func checkWebsite(ctx context.Context, url string, version string) (*WebsiteCheckDetail, error) {
 	var err error
 	ctx, err = ssrf.ValidateOutboundTarget(ctx, url)
 	if err != nil {
@@ -520,8 +526,7 @@ func measureDNSTime(urlStr string, version string) float64 {
 	return time.Since(start).Seconds() * 1000
 }
 
-func websiteSpeed(url string, version string) (*WebsiteSpeedTestResult, error) {
-	ctx := context.Background()
+func websiteSpeed(ctx context.Context, url string, version string) (*WebsiteSpeedTestResult, error) {
 	var err error
 	ctx, err = ssrf.ValidateOutboundTarget(ctx, url)
 	if err != nil {
@@ -592,8 +597,7 @@ func websiteSpeed(url string, version string) (*WebsiteSpeedTestResult, error) {
 	return result, nil
 }
 
-func checkSSL(targetURL string, version string) (*SSLCheckDetail, error) {
-	ctx := context.Background()
+func checkSSL(ctx context.Context, targetURL string, version string) (*SSLCheckDetail, error) {
 	var err error
 	ctx, err = ssrf.ValidateOutboundTarget(ctx, targetURL)
 	if err != nil {
@@ -722,7 +726,7 @@ func checkWebsiteHandler(c *gin.Context) {
 		result := &WebsiteCheckResult{}
 		switch SINGLE_STACK {
 		case "ipv4":
-			ipv4, errV4 := checkWebsite(testUrl, "v4")
+			ipv4, errV4 := checkWebsite(c.Request.Context(), testUrl, "v4")
 			if errV4 != nil {
 				ipv4 = &WebsiteCheckDetail{
 					HostRecord:  "Error: " + errV4.Error(),
@@ -735,7 +739,7 @@ func checkWebsiteHandler(c *gin.Context) {
 				IsReachable: false,
 			}
 		case "ipv6":
-			ipv6, errV6 := checkWebsite(testUrl, "v6")
+			ipv6, errV6 := checkWebsite(c.Request.Context(), testUrl, "v6")
 			if errV6 != nil {
 				ipv6 = &WebsiteCheckDetail{
 					HostRecord:  "Error: " + errV6.Error(),
@@ -753,7 +757,7 @@ func checkWebsiteHandler(c *gin.Context) {
 
 			go func() {
 				defer wg.Done()
-				ipv6, errV6 := checkWebsite(testUrl, "v6")
+				ipv6, errV6 := checkWebsite(c.Request.Context(), testUrl, "v6")
 				if errV6 != nil {
 					ipv6 = &WebsiteCheckDetail{
 						HostRecord:  "Error: " + errV6.Error(),
@@ -765,7 +769,7 @@ func checkWebsiteHandler(c *gin.Context) {
 
 			go func() {
 				defer wg.Done()
-				ipv4, errV4 := checkWebsite(testUrl, "v4")
+				ipv4, errV4 := checkWebsite(c.Request.Context(), testUrl, "v4")
 				if errV4 != nil {
 					ipv4 = &WebsiteCheckDetail{
 						HostRecord:  "Error: " + errV4.Error(),
@@ -779,13 +783,9 @@ func checkWebsiteHandler(c *gin.Context) {
 		}
 
 		websiteCache.Set(testUrl, result)
-
-		if (result.IPv4 != nil && !result.IPv4.IsReachable) || (result.IPv6 != nil && !result.IPv6.IsReachable) {
-			go func() {
-				time.Sleep(30 * time.Second)
-				websiteCache.Delete(testUrl)
-			}()
-		}
+		// 失败结果也留在缓存里吃满 TTL —— ttlCache 本身有上限与过期，
+		// 之前「30 秒后删」的做法会为每个失败请求挂一个 goroutine，
+		// 失败风暴时白白堆积；且短 TTL 删除反而放大了对目标的重复探测。
 
 		return result, nil
 	})
@@ -837,16 +837,13 @@ func websiteSpeedTestHandler(c *gin.Context) {
 	switch version {
 	case "v6", "v4":
 		rawResult, _, _ := sfGroup.Do(cacheKey, func() (interface{}, error) {
-			r, e := websiteSpeed(url, version)
+			r, e := websiteSpeed(c.Request.Context(), url, version)
 			if e != nil {
+				// 失败结果同样缓存到 TTL —— 见 websiteCache 处的说明
 				errorResult := &WebsiteSpeedTestResult{
 					HostRecord: "Error: " + e.Error(),
 				}
 				speedCache.Set(cacheKey, errorResult)
-				go func() {
-					time.Sleep(30 * time.Second)
-					speedCache.Delete(cacheKey)
-				}()
 				return errorResult, nil
 			}
 			speedCache.Set(cacheKey, r)
@@ -863,12 +860,10 @@ func websiteSpeedTestHandler(c *gin.Context) {
 	c.JSON(200, result)
 }
 
+// websiteSpeedRouteHandler 已并入统一鉴权：/v1 查询族由
+// requireBearerMiddleware 覆盖，此处无需再单独判断
+// IPW_SPEED_API_KEY_REQUIRED（该开关随自建密钥体系删除）。
 func websiteSpeedRouteHandler(c *gin.Context) {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("IPW_SPEED_API_KEY_REQUIRED")), "true") {
-		if !requireNodeKey(c) {
-			return
-		}
-	}
 	websiteSpeedTestHandler(c)
 }
 
@@ -895,7 +890,7 @@ func sslCheckHandler(c *gin.Context) {
 		result := &SSLCheckResult{}
 		switch SINGLE_STACK {
 		case "ipv4":
-			ipv4, errV4 := checkSSL(testUrl, "v4")
+			ipv4, errV4 := checkSSL(c.Request.Context(), testUrl, "v4")
 			if errV4 != nil {
 				ipv4 = &SSLCheckDetail{
 					HostRecord:  "Error: " + errV4.Error(),
@@ -910,7 +905,7 @@ func sslCheckHandler(c *gin.Context) {
 				IsReachable: false,
 			}
 		case "ipv6":
-			ipv6, errV6 := checkSSL(testUrl, "v6")
+			ipv6, errV6 := checkSSL(c.Request.Context(), testUrl, "v6")
 			if errV6 != nil {
 				ipv6 = &SSLCheckDetail{
 					HostRecord:  "Error: " + errV6.Error(),
@@ -930,7 +925,7 @@ func sslCheckHandler(c *gin.Context) {
 
 			go func() {
 				defer wg.Done()
-				ipv6, errV6 := checkSSL(testUrl, "v6")
+				ipv6, errV6 := checkSSL(c.Request.Context(), testUrl, "v6")
 				if errV6 != nil {
 					ipv6 = &SSLCheckDetail{
 						HostRecord:  "Error: " + errV6.Error(),
@@ -943,7 +938,7 @@ func sslCheckHandler(c *gin.Context) {
 
 			go func() {
 				defer wg.Done()
-				ipv4, errV4 := checkSSL(testUrl, "v4")
+				ipv4, errV4 := checkSSL(c.Request.Context(), testUrl, "v4")
 				if errV4 != nil {
 					ipv4 = &SSLCheckDetail{
 						HostRecord:  "Error: " + errV4.Error(),
@@ -958,13 +953,7 @@ func sslCheckHandler(c *gin.Context) {
 		}
 
 		sslCache.Set(testUrl, result)
-
-		if (result.IPv4 != nil && !result.IPv4.IsReachable) || (result.IPv6 != nil && !result.IPv6.IsReachable) {
-			go func() {
-				time.Sleep(30 * time.Second)
-				sslCache.Delete(testUrl)
-			}()
-		}
+		// 失败结果留在缓存吃满 TTL，理由同 websiteCache
 
 		return result, nil
 	})
@@ -975,13 +964,13 @@ func sslCheckHandler(c *gin.Context) {
 func locateIP(c *gin.Context) {
 	ip := c.Param("ip")
 	slog.Debug("Locating IP", "ip", ip)
-	c.JSON(http.StatusOK, ipdb.SearchIP(ip))
+	c.JSON(http.StatusOK, ipdb.SearchIP(c.Request.Context(), ip))
 }
 func locateUserIP(c *gin.Context) {
 	ip := c.ClientIP()
 	// 可能会有误报，因为某些环境下 ClientIP() 可能返回代理服务器的 IP 地址，而不是用户的真实 IP 地址
 	slog.Debug("Locating user IP", "ip", ip)
-	c.JSON(http.StatusOK, ipdb.SearchIP(ip))
+	c.JSON(http.StatusOK, ipdb.SearchIP(c.Request.Context(), ip))
 }
 
 func curlIPHandler(c *gin.Context) {
@@ -1202,15 +1191,7 @@ func pingHandler(c *gin.Context) {
 		}
 
 		pingCache.Set(cacheKey, result)
-
-		ipv4Failed := result.IPv4 != nil && strings.HasPrefix(result.IPv4.IP, "Error:")
-		ipv6Failed := result.IPv6 != nil && strings.HasPrefix(result.IPv6.IP, "Error:")
-		if ipv4Failed && ipv6Failed {
-			go func() {
-				time.Sleep(30 * time.Second)
-				pingCache.Delete(cacheKey)
-			}()
-		}
+		// 双栈失败也留在缓存（pingCache TTL 仅 1 分钟），理由同上
 
 		return result, nil
 	})
@@ -1232,7 +1213,11 @@ func speedtestUploadHandler(c *gin.Context) {
 	start := time.Now()
 	received, err := io.Copy(io.Discard, c.Request.Body)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "upload failed"})
+		// MaxBytesReader 超限时客户端已断流，返回 400 即可；
+		// 客户端主动断开（用户取消测速）不算错误，静默结束
+		if !errors.Is(err, http.ErrBodyReadAfterClose) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "upload failed"})
+		}
 		return
 	}
 	c.Header("Cache-Control", "no-store")
@@ -1285,6 +1270,7 @@ func readConfig() {
 	DNS_SERVER = os.Getenv("DNS_SERVER")
 	IPDB = os.Getenv("IPDB")
 	CORS = os.Getenv("CORS")
+	ACCESS_TOKEN = strings.TrimSpace(os.Getenv("ACCESS_TOKEN"))
 	ssrf.SetEnabled(os.Getenv("BLOCK_PRIVATE_IPS") != "false" && os.Getenv("BLOCK_PRIVATE_IPS") != "0")
 
 	// SINGLE_STACK is intentionally excluded: empty string is a valid value (dual-stack).
@@ -1312,6 +1298,13 @@ func readConfig() {
 	}
 	if CORS == "" {
 		CORS = viper.GetString("cors")
+	}
+	// ACCESS_TOKEN 的优先级与上游 rc7.1 一致：环境变量 > setting.json
+	if ACCESS_TOKEN == "" {
+		ACCESS_TOKEN = strings.TrimSpace(viper.GetString("access_token"))
+	}
+	if ACCESS_TOKEN != "" {
+		slog.Info("Bearer token auth enabled")
 	}
 	if PORTS == "" {
 		PORTS = "8080"
@@ -1358,7 +1351,9 @@ func registerApplicationRoutes(r *gin.Engine) {
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("IPW_NODE_API_ENABLED")), "false") {
 		registerNodeAPIRoutes(r)
 	}
-	protectedAPI := r.Group("", requireNodeKeyMiddleware())
+	// 查询族整体挂统一 Bearer 鉴权；ACCESS_TOKEN 为空时
+	// requireBearerMiddleware 放行（匿名节点兼容）。
+	protectedAPI := r.Group("", requireBearerMiddleware())
 	registerLegacyAPIRoutes(protectedAPI)
 	r.GET("/", healchCheck)
 	r.GET("/v1/curl", curlIPHandler)
@@ -1379,15 +1374,14 @@ func main() {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:  ACCEPT_DOMAINS,
 			AllowMethods:  []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
-			AllowHeaders:  []string{"Origin", "Content-Type", "Accept", "Authorization", "X-API-Key", "X-IPW-Admin-Token"},
+			// Authorization 是 RFC 6750 标准头；X-API-Key / X-IPW-Admin-Token
+			// 随自建密钥体系删除，不再放行
+			AllowHeaders:  []string{"Origin", "Content-Type", "Accept", "Authorization"},
 			ExposeHeaders: []string{"Content-Length"},
 			MaxAge:        12 * time.Hour,
 		}))
 	} else {
 		r.Use(cors.Default())
-	}
-	if err := initKeyStore(); err != nil {
-		panic(err)
 	}
 	registerApplicationRoutes(r)
 	server := &http.Server{

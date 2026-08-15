@@ -80,7 +80,7 @@ func TestPublicQuerySpeedCallsLegacyNodeRoute(t *testing.T) {
 	}
 	proxy := &publicQueryProxy{
 		nodes: map[string]publicQueryNode{
-			"test": {ID: "test", Label: "Test node", URL: nodeURL, Key: "node-key"},
+			"test": {ID: "test", Label: "Test node", URL: nodeURL},
 		},
 		client:      upstream.Client(),
 		rateLimit:   30,
@@ -103,74 +103,98 @@ func TestPublicQuerySpeedCallsLegacyNodeRoute(t *testing.T) {
 	if gotPath != "/v1/speed/v4/example.com" {
 		t.Fatalf("node path = %q, want RC7.1 speed route", gotPath)
 	}
-	if gotAuthorization != "Bearer node-key" {
-		t.Fatalf("node authorization = %q", gotAuthorization)
+	// ACCESS_TOKEN 未配置时不带 Authorization —— 节点侧同样开放
+	if gotAuthorization != "" {
+		t.Fatalf("node authorization = %q, want empty when ACCESS_TOKEN unset", gotAuthorization)
+	}
+}
+
+func TestPublicQuerySendsSharedBearerToken(t *testing.T) {
+	var gotAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotAuthorization = request.Header.Get("Authorization")
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	nodeURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &publicQueryProxy{
+		nodes: map[string]publicQueryNode{
+			"test": {ID: "test", Label: "Test node", URL: nodeURL},
+		},
+		client:      upstream.Client(),
+		rateLimit:   30,
+		concurrency: make(chan struct{}, 1),
+		rates:       make(map[string]publicRateEntry),
+	}
+	router := gin.New()
+	router.POST("/v1/public-query/:node/:probe", proxy.run)
+
+	original := ACCESS_TOKEN
+	ACCESS_TOKEN = "shared-token"
+	t.Cleanup(func() { ACCESS_TOKEN = original })
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/public-query/test/dns", strings.NewReader(`{"domain":"example.com","type":"A"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if gotAuthorization != "Bearer shared-token" {
+		t.Fatalf("node authorization = %q, want shared ACCESS_TOKEN", gotAuthorization)
 	}
 }
 
 func TestNewPublicQueryProxyLoadsShiyanNode(t *testing.T) {
+	// _KEY 不再是必需项 —— 只配 _URL 节点就应加载
 	t.Setenv("IPW_PUBLIC_NODE_SHIYAN_URL", "https://shiyan-node.example")
-	t.Setenv("IPW_PUBLIC_NODE_SHIYAN_KEY", "shiyan-key")
 	proxy := newPublicQueryProxy()
 	node, ok := proxy.nodes["shiyan"]
 	if !ok {
 		t.Fatal("expected shiyan node to be loaded")
 	}
-	if node.Label != "中国 湖北 十堰 电信" || node.URL.String() != "https://shiyan-node.example" || node.Key != "shiyan-key" {
+	if node.Label != "中国 湖北 十堰 电信" || node.URL.String() != "https://shiyan-node.example" {
 		t.Fatalf("unexpected shiyan node: %#v", node)
 	}
 }
 
 func TestNewPublicQueryProxyLoadsHongKongVpsQuanNode(t *testing.T) {
 	t.Setenv("IPW_PUBLIC_NODE_HONGKONG2_URL", "https://hongkong2-node.example")
-	t.Setenv("IPW_PUBLIC_NODE_HONGKONG2_KEY", "hongkong2-key")
 	proxy := newPublicQueryProxy()
 	node, ok := proxy.nodes["hongkong2"]
 	if !ok {
 		t.Fatal("expected hongkong2 node to be loaded")
 	}
-	if node.Label != "中国 香港 VpsQuan" || node.URL.String() != "https://hongkong2-node.example" || node.Key != "hongkong2-key" {
+	if node.Label != "中国 香港 VpsQuan" || node.URL.String() != "https://hongkong2-node.example" {
 		t.Fatalf("unexpected hongkong2 node: %#v", node)
 	}
 }
 
 func TestNewPublicQueryProxyLoadsJDCloudNode(t *testing.T) {
 	t.Setenv("IPW_PUBLIC_NODE_JDCLOUD_URL", "https://jdcloud-node.example")
-	t.Setenv("IPW_PUBLIC_NODE_JDCLOUD_KEY", "jdcloud-key")
 	proxy := newPublicQueryProxy()
 	node, ok := proxy.nodes["jdcloud"]
 	if !ok {
 		t.Fatal("expected jdcloud node to be loaded")
 	}
-	if node.Label != "中国 北京 京东云 三网BGP" || node.URL.String() != "https://jdcloud-node.example" || node.Key != "jdcloud-key" {
+	if node.Label != "中国 北京 京东云 三网BGP" || node.URL.String() != "https://jdcloud-node.example" {
 		t.Fatalf("unexpected jdcloud node: %#v", node)
 	}
 }
 
-func TestWebsiteSpeedRouteCanRequireNodeKey(t *testing.T) {
-	t.Setenv("IPW_SPEED_API_KEY_REQUIRED", "true")
-	recorder := httptest.NewRecorder()
-	context, _ := gin.CreateTestContext(recorder)
-	context.Request = httptest.NewRequest(http.MethodGet, "/v1/speed/v4/example.com", nil)
-	context.Params = gin.Params{{Key: "version", Value: "v4"}, {Key: "url", Value: "/example.com"}}
-	websiteSpeedRouteHandler(context)
-	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("protected speed status = %d, want 401", recorder.Code)
-	}
-}
-
-func TestApplicationRoutesUseSharedNodeKey(t *testing.T) {
+func TestApplicationRoutesUseBearerToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("IPW_NODE_API_ENABLED", "false")
 
-	const validKey = "sk-ipw-shared-route-test"
-	originalNodeKeys := nodeKeys
-	nodeKeys = &keyStore{keys: []nodeAPIKey{{
-		ID:   "shared-route-test",
-		Name: "shared route test",
-		Hash: hashAPIKey(validKey),
-	}}}
-	t.Cleanup(func() { nodeKeys = originalNodeKeys })
+	original := ACCESS_TOKEN
+	ACCESS_TOKEN = "route-bearer-test"
+	t.Cleanup(func() { ACCESS_TOKEN = original })
 
 	router := gin.New()
 	registerApplicationRoutes(router)
@@ -180,9 +204,9 @@ func TestApplicationRoutesUseSharedNodeKey(t *testing.T) {
 		authorization string
 		wantStatus    int
 	}{
-		{name: "missing key", wantStatus: http.StatusUnauthorized},
-		{name: "invalid key", authorization: "Bearer sk-ipw-invalid", wantStatus: http.StatusUnauthorized},
-		{name: "valid shared key", authorization: "Bearer " + validKey, wantStatus: http.StatusOK},
+		{name: "missing token", wantStatus: http.StatusUnauthorized},
+		{name: "invalid token", authorization: "Bearer wrong-token", wantStatus: http.StatusUnauthorized},
+		{name: "valid bearer", authorization: "Bearer route-bearer-test", wantStatus: http.StatusOK},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -196,6 +220,26 @@ func TestApplicationRoutesUseSharedNodeKey(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, test.wantStatus, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// 未配置 ACCESS_TOKEN 时应保持开放（匿名节点兼容）
+func TestApplicationRoutesOpenWithoutToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("IPW_NODE_API_ENABLED", "false")
+
+	original := ACCESS_TOKEN
+	ACCESS_TOKEN = ""
+	t.Cleanup(func() { ACCESS_TOKEN = original })
+
+	router := gin.New()
+	registerApplicationRoutes(router)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/speedtest-upload", http.NoBody)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 when ACCESS_TOKEN unset; body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

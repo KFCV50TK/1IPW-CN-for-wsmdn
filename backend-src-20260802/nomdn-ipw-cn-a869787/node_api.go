@@ -1,15 +1,24 @@
 package main
 
+// 探测族 API（POST /v1/http-test 等）与节点侧主动测量。
+//
+// 鉴权（重构后）：RFC 6750 Bearer Token —— Authorization: Bearer <ACCESS_TOKEN>，
+// 全后端唯一一把钥匙，查询族（GET /v1/*）与探测族（POST /v1/http-test 等）
+// 共用。token 为空则全部开放（上游默认行为，兼容匿名节点）。
+//
+// 删除的三套自建机制（2026-08-16 重构）：
+//   - sk-ipw- key 库（node_keys.json 持久化、SHA-256 hash 校验、吊销）
+//   - IPW_ADMIN_TOKEN + /admin/keys 管理端点
+//   - X-IPW-Admin-Token 请求头
+// 多套并行体系没有带来额外安全 —— 公开侧流量走 public_query 代理（带
+// 限流与并发闸），节点与主站之间一把共享 token 已足够，且与上游
+// rc7.1 的 ACCESS_TOKEN 约定对齐，前端配置里各节点共用同一 token。
+
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"lemon-ipw/ssrf"
@@ -17,105 +26,24 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	defaultKeyStore  = "node_keys.json"
 	maxHTTPBody      = 64 * 1024
 	maxHTTPTimeout   = 10 * time.Second
 	defaultTraceHops = 18
 )
 
-type nodeAPIKey struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Hash      string     `json:"hash"`
-	CreatedAt time.Time  `json:"created_at"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
-}
-
-type keyStore struct {
-	mu   sync.Mutex
-	path string
-	keys []nodeAPIKey
-}
-
-var nodeKeys = &keyStore{}
-
-func initKeyStore() error {
-	path := strings.TrimSpace(os.Getenv("IPW_API_KEY_STORE"))
-	if path == "" {
-		path = defaultKeyStore
-	}
-	nodeKeys.path = path
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		nodeKeys.keys = []nodeAPIKey{}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if len(data) == 0 {
-		nodeKeys.keys = []nodeAPIKey{}
-		return nil
-	}
-	if err := json.Unmarshal(data, &nodeKeys.keys); err != nil {
-		return fmt.Errorf("invalid API key store: %w", err)
-	}
-	return nil
-}
-
-func (s *keyStore) persistLocked() error {
-	data, err := json.MarshalIndent(s.keys, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
-}
-
-func hashAPIKey(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
-}
-
-func newAPIKey() (string, error) {
-	buffer := make([]byte, 32)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", err
-	}
-	return "sk-ipw-" + base64.RawURLEncoding.EncodeToString(buffer), nil
-}
-
-func (s *keyStore) valid(value string) bool {
-	if !strings.HasPrefix(value, "sk-ipw-") {
-		return false
-	}
-	hash := hashAPIKey(value)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, key := range s.keys {
-		if key.Hash == hash && key.RevokedAt == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func authorizationBearer(c *gin.Context) string {
+// bearerToken 按 RFC 6750 §2.1 解析 Authorization 头。
+// 只认标准 Bearer 方案（大小写不敏感）；非 Bearer 方案返回空。
+func bearerToken(c *gin.Context) string {
 	value := strings.TrimSpace(c.GetHeader("Authorization"))
 	if len(value) > 7 && strings.EqualFold(value[:7], "Bearer ") {
 		return strings.TrimSpace(value[7:])
@@ -123,19 +51,37 @@ func authorizationBearer(c *gin.Context) string {
 	return ""
 }
 
-func bearerToken(c *gin.Context) string {
-	if value := authorizationBearer(c); value != "" {
-		return value
-	}
-	return strings.TrimSpace(c.GetHeader("X-IPW-Admin-Token"))
+// secureStringEqual 常数时间字符串比较，防时序侧信道。
+// 先各自哈希成等长再比，规避 subtle 包要求等长输入的限制。
+func secureStringEqual(a, b string) bool {
+	aHash := sha256.Sum256([]byte(a))
+	bHash := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(aHash[:], bHash[:]) == 1
 }
 
-func requireNodeKey(c *gin.Context) bool {
-	if !nodeKeys.valid(bearerToken(c)) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "valid API key required"})
+// requireBearer 是统一鉴权检查：与查询族共用 ACCESS_TOKEN。
+// token 未配置（空）时放行 —— 匿名节点的兼容行为。
+func requireBearer(c *gin.Context) bool {
+	if ACCESS_TOKEN != "" && !secureStringEqual(bearerToken(c), ACCESS_TOKEN) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return false
 	}
 	return true
+}
+
+// requireBearerMiddleware 中间件形态，挂在路由组上。
+// OPTIONS 预检直接放行 —— CORS 预检不带凭证，拦了会破坏浏览器跨域。
+func requireBearerMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodOptions {
+			c.Next()
+			return
+		}
+		if !requireBearer(c) {
+			return
+		}
+		c.Next()
+	}
 }
 
 func limitNodeBody(maxBytes int64) gin.HandlerFunc {
@@ -145,163 +91,52 @@ func limitNodeBody(maxBytes int64) gin.HandlerFunc {
 	}
 }
 
-func requireNodeKeyMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.Request.Method == http.MethodOptions {
-			c.Next()
-			return
-		}
-		if !requireNodeKey(c) {
-			return
-		}
-		c.Next()
-	}
-}
-
-func requireAdmin(c *gin.Context) bool {
-	expected := strings.TrimSpace(os.Getenv("IPW_ADMIN_TOKEN"))
-	if expected == "" || bearerToken(c) == "" || !secureStringEqual(bearerToken(c), expected) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "admin token required"})
-		return false
-	}
-	return true
-}
-
-func secureStringEqual(a, b string) bool {
-	aHash := sha256.Sum256([]byte(a))
-	bHash := sha256.Sum256([]byte(b))
-	return subtle.ConstantTimeCompare(aHash[:], bHash[:]) == 1
-}
-
-func createKeyHandler(c *gin.Context) {
-	if !requireAdmin(c) {
-		return
-	}
-	var request struct {
-		Name string `json:"name"`
-	}
-	if err := c.ShouldBindJSON(&request); err != nil && !errors.Is(err, io.EOF) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
-		return
-	}
-	name := strings.TrimSpace(request.Name)
-	if name == "" {
-		name = "Unnamed key"
-	}
-	if len(name) > 80 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is too long"})
-		return
-	}
-	plain, err := newAPIKey()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create key"})
-		return
-	}
-	key := nodeAPIKey{ID: keyID(), Name: name, Hash: hashAPIKey(plain), CreatedAt: time.Now().UTC()}
-	nodeKeys.mu.Lock()
-	nodeKeys.keys = append(nodeKeys.keys, key)
-	err = nodeKeys.persistLocked()
-	nodeKeys.mu.Unlock()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not persist key"})
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"id": key.ID, "name": key.Name, "key": plain, "created_at": key.CreatedAt})
-}
-
-func keyID() string {
-	buffer := make([]byte, 8)
-	if _, err := rand.Read(buffer); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 36)
-	}
-	return hex.EncodeToString(buffer)
-}
-
-func listKeysHandler(c *gin.Context) {
-	if !requireAdmin(c) {
-		return
-	}
-	nodeKeys.mu.Lock()
-	defer nodeKeys.mu.Unlock()
-	result := make([]nodeAPIKey, len(nodeKeys.keys))
-	copy(result, nodeKeys.keys)
-	for index := range result {
-		result[index].Hash = ""
-	}
-	c.JSON(http.StatusOK, gin.H{"keys": result})
-}
-
-func revokeKeyHandler(c *gin.Context) {
-	if !requireAdmin(c) {
-		return
-	}
-	id := strings.TrimSpace(c.Param("id"))
-	nodeKeys.mu.Lock()
-	found := false
-	for index := range nodeKeys.keys {
-		if nodeKeys.keys[index].ID != id {
-			continue
-		}
-		now := time.Now().UTC()
-		nodeKeys.keys[index].RevokedAt = &now
-		found = true
-		break
-	}
-	var err error
-	if found {
-		err = nodeKeys.persistLocked()
-	}
-	nodeKeys.mu.Unlock()
-	if !found {
-		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not persist key"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "revoked"})
-}
-
 type httpProbeRequest struct {
 	URL    string `json:"url"`
 	Method string `json:"method"`
 	Body   string `json:"body"`
 }
 
-func validatePublicURL(raw string) (*url.URL, context.Context, error) {
+// validatePublicURL 解析并校验探测目标，返回携带 SSRF 已验证 IP 的
+// 派生 context。base 应传请求 context —— 客户端断开时 DNS 解析与
+// 后续探测随之取消。
+func validatePublicURL(base context.Context, raw string) (*url.URL, context.Context, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return nil, nil, fmt.Errorf("URL must use http or https")
 	}
-	ips, err := resolvePublicIPs(parsed.Hostname())
+	ips, err := resolvePublicIPs(base, parsed.Hostname())
 	if err != nil {
 		return nil, nil, err
 	}
-	ctx := context.WithValue(context.Background(), ssrf.ValidatedIPsKey(), ssrf.ValidatedTarget{
+	ctx := context.WithValue(base, ssrf.ValidatedIPsKey(), ssrf.ValidatedTarget{
 		Host: strings.TrimSuffix(strings.ToLower(parsed.Hostname()), "."),
 		IPs:  ips,
 	})
 	return parsed, ctx, nil
 }
 
-func resolvePublicIPs(host string) ([]net.IP, error) {
+// resolvePublicIPs 解析主机名为公网 IP 列表；解析结果里有任何一个
+// 内网地址就整体拒绝 —— 防止多 A 记录里混一个内网 IP 绕过 SSRF。
+func resolvePublicIPs(ctx context.Context, host string) ([]net.IP, error) {
 	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
 		if ssrf.IsPrivateIP(ip) {
 			return nil, fmt.Errorf("private or internal targets are not allowed")
 		}
 		return []net.IP{ip}, nil
 	}
-	ips, err := net.LookupIP(host)
+	// 用 resolver 而非包级 LookupIP：继承请求 context 的取消
+	var r net.Resolver
+	ips, err := r.LookupIPAddr(ctx, host)
 	if err != nil {
 		return nil, err
 	}
 	public := make([]net.IP, 0, len(ips))
-	for _, ip := range ips {
-		if ssrf.IsPrivateIP(ip) {
+	for _, addr := range ips {
+		if ssrf.IsPrivateIP(addr.IP) {
 			return nil, fmt.Errorf("host resolves to a private or internal address")
 		}
-		public = append(public, ip)
+		public = append(public, addr.IP)
 	}
 	if len(public) == 0 {
 		return nil, fmt.Errorf("no public address found for %s", host)
@@ -310,7 +145,7 @@ func resolvePublicIPs(host string) ([]net.IP, error) {
 }
 
 func httpProbeHandler(c *gin.Context) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var input httpProbeRequest
@@ -318,7 +153,7 @@ func httpProbeHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return
 	}
-	parsed, ctx, err := validatePublicURL(input.URL)
+	parsed, ctx, err := validatePublicURL(c.Request.Context(), input.URL)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -402,7 +237,7 @@ type socketProbeRequest struct {
 	Timeout int    `json:"timeout_ms"`
 }
 
-func publicAddress(host string, port int) (string, error) {
+func publicAddress(ctx context.Context, host string, port int) (string, error) {
 	host = strings.TrimSpace(host)
 	if host == "" || port < 1 || port > 65535 {
 		return "", fmt.Errorf("host and port are required")
@@ -413,16 +248,18 @@ func publicAddress(host string, port int) (string, error) {
 		}
 		return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 	}
-	ips, err := net.LookupIP(host)
+	// 跟请求取消；任一解析结果是内网地址即整体拒绝（同 resolvePublicIPs）
+	var r net.Resolver
+	addrs, err := r.LookupIPAddr(ctx, host)
 	if err != nil {
 		return "", err
 	}
-	for _, ip := range ips {
-		if ssrf.IsPrivateIP(ip) {
+	for _, addr := range addrs {
+		if ssrf.IsPrivateIP(addr.IP) {
 			return "", fmt.Errorf("host resolves to a private or internal address")
 		}
 	}
-	return net.JoinHostPort(ips[0].String(), strconv.Itoa(port)), nil
+	return net.JoinHostPort(addrs[0].IP.String(), strconv.Itoa(port)), nil
 }
 
 func socketTimeout(value int) time.Duration {
@@ -433,7 +270,7 @@ func socketTimeout(value int) time.Duration {
 }
 
 func tcpProbeHandler(c *gin.Context) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var input socketProbeRequest
@@ -441,7 +278,7 @@ func tcpProbeHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return
 	}
-	address, err := publicAddress(input.Host, input.Port)
+	address, err := publicAddress(c.Request.Context(), input.Host, input.Port)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -458,7 +295,7 @@ func tcpProbeHandler(c *gin.Context) {
 }
 
 func udpProbeHandler(c *gin.Context) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var input socketProbeRequest
@@ -466,7 +303,7 @@ func udpProbeHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return
 	}
-	address, err := publicAddress(input.Host, input.Port)
+	address, err := publicAddress(c.Request.Context(), input.Host, input.Port)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -552,7 +389,7 @@ func parseTracerouteOutput(output string) []traceHop {
 }
 
 func tracerouteHandler(c *gin.Context) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var input traceProbeRequest
@@ -565,7 +402,7 @@ func tracerouteHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "host is required"})
 		return
 	}
-	ips, err := resolvePublicIPs(host)
+	ips, err := resolvePublicIPs(c.Request.Context(), host)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -629,7 +466,7 @@ type dnsProbeRequest struct {
 }
 
 func dnsProbeHandler(c *gin.Context, dnssec bool) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var input dnsProbeRequest
@@ -646,7 +483,7 @@ func dnsProbeHandler(c *gin.Context, dnssec bool) {
 }
 
 func asnHandler(c *gin.Context) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var input struct {
@@ -789,7 +626,7 @@ func parseWhoisDetails(raw string) whoisDetails {
 // 接受 {"domain":"x"} 或 {"ip":"x"} 或 {"url":"x"} 或 {"target":"x"}，
 // 注入为路径参数后委派给原 handler。batch 直接透传 body。
 func localCheckWrapper(c *gin.Context, paramKey string, targetHandler func(*gin.Context)) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var body map[string]interface{}
@@ -813,7 +650,7 @@ func localCheckWrapper(c *gin.Context, paramKey string, targetHandler func(*gin.
 }
 
 func whoisHandler(c *gin.Context) {
-	if !requireNodeKey(c) {
+	if !requireBearer(c) {
 		return
 	}
 	var input struct {
@@ -859,12 +696,11 @@ func queryWhois(server, domain string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
+// registerNodeAPIRoutes 注册探测族路由。鉴权在各 handler 入口的
+// requireBearer（统一 ACCESS_TOKEN）；admin key 管理端点已随自建
+// 密钥体系删除。
 func registerNodeAPIRoutes(r *gin.Engine) {
 	register := func(prefix string) {
-		admin := r.Group(prefix+"/admin", limitNodeBody(maxHTTPBody))
-		admin.GET("/keys", listKeysHandler)
-		admin.POST("/keys", createKeyHandler)
-		admin.DELETE("/keys/:id", revokeKeyHandler)
 		protected := r.Group(prefix, limitNodeBody(maxHTTPBody))
 		protected.POST("/http-test", httpProbeHandler)
 		protected.POST("/tcp-test", tcpProbeHandler)
@@ -879,8 +715,8 @@ func registerNodeAPIRoutes(r *gin.Engine) {
 		protected.POST("/cdn", func(c *gin.Context) { localCheckWrapper(c, "url", cdnDetectHandler) })
 		protected.POST("/security-headers", func(c *gin.Context) { localCheckWrapper(c, "url", securityHeadersHandler) })
 	}
-	// /api is the browser reverse-proxy prefix on the main site. Direct node
-	// access and the Hong Kong node use /v1, so both forms are supported.
+	// /api 是主站对浏览器的反向代理前缀；直连节点与香港节点用 /v1，
+	// 两种形态都注册，代理与节点不必同构。
 	register("/v1")
 	register("/api/v1")
 }

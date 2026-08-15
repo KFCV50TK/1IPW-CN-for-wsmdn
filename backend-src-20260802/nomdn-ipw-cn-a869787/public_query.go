@@ -96,7 +96,9 @@ type publicQueryNode struct {
 	ID    string
 	Label string
 	URL   *url.URL
-	Key   string
+	// Key 已删除：所有节点共用全局 ACCESS_TOKEN（RFC 6750）。
+	// 每节点独立密钥（IPW_PUBLIC_NODE_*_KEY）随自建密钥体系废弃，
+	// 节点侧只认同一个 Bearer token。
 }
 
 type publicRateEntry struct {
@@ -121,16 +123,16 @@ func publicClientIP(c *gin.Context) string {
 }
 
 func publicNodeFromEnv(id, label, envPrefix string) (publicQueryNode, bool) {
+	// 只看 _URL；_KEY 不再要求 —— 鉴权统一走 ACCESS_TOKEN
 	rawURL := strings.TrimSpace(os.Getenv(envPrefix + "_URL"))
-	key := strings.TrimSpace(os.Getenv(envPrefix + "_KEY"))
-	if rawURL == "" || key == "" {
+	if rawURL == "" {
 		return publicQueryNode{}, false
 	}
 	parsed, err := url.Parse(strings.TrimRight(rawURL, "/"))
 	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return publicQueryNode{}, false
 	}
-	return publicQueryNode{ID: id, Label: label, URL: parsed, Key: key}, true
+	return publicQueryNode{ID: id, Label: label, URL: parsed}, true
 }
 
 func newPublicQueryProxy() *publicQueryProxy {
@@ -269,7 +271,10 @@ func (proxy *publicQueryProxy) run(c *gin.Context) {
 	if requestMethod != http.MethodGet {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	request.Header.Set("Authorization", "Bearer "+node.Key)
+	// 全节点共用 ACCESS_TOKEN；未配置则不带（节点侧同样开放）
+	if ACCESS_TOKEN != "" {
+		request.Header.Set("Authorization", "Bearer "+ACCESS_TOKEN)
+	}
 	response, err := proxy.client.Do(request)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("%s node is temporarily unavailable", node.Label)})

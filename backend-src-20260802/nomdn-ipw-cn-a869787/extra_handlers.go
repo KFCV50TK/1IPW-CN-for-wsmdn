@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -174,6 +175,8 @@ var rblProviders = []string{
 	"cbl.abuseat.org",
 }
 
+// rblCheckHandler 查 5 个 DNSBL。并发查询 —— 原先串行时每个
+// 失败域名要等满解析超时，最坏 5×10s；并发放到一次往返内。
 func rblCheckHandler(c *gin.Context) {
 	ipStr := strings.TrimSpace(c.Param("ip"))
 	if ipStr == "" {
@@ -195,20 +198,29 @@ func rblCheckHandler(c *gin.Context) {
 
 	result := RBLResult{
 		IP:        ipStr,
-		Blacklist: []RBLRecord{},
+		Blacklist: make([]RBLRecord, len(rblProviders)),
 		Status:    "clean",
 	}
 
-	for _, rbl := range rblProviders {
-		query := reversed + "." + rbl
-		listed, reason := checkRBL(query)
-		result.Blacklist = append(result.Blacklist, RBLRecord{
-			RBL:    rbl,
-			Listed: listed,
-			Reason: reason,
-		})
-		if listed {
+	var wg sync.WaitGroup
+	for i, rbl := range rblProviders {
+		wg.Add(1)
+		go func(i int, rbl string) {
+			defer wg.Done()
+			query := reversed + "." + rbl
+			listed, reason := checkRBL(c.Request.Context(), query)
+			result.Blacklist[i] = RBLRecord{
+				RBL:    rbl,
+				Listed: listed,
+				Reason: reason,
+			}
+		}(i, rbl)
+	}
+	wg.Wait()
+	for _, record := range result.Blacklist {
+		if record.Listed {
 			result.Status = "listed"
+			break
 		}
 	}
 
@@ -223,8 +235,9 @@ func reverseIP(ip string) string {
 	return parts[3] + "." + parts[2] + "." + parts[1] + "." + parts[0]
 }
 
-func checkRBL(query string) (bool, string) {
-	ips, err := net.LookupIP(query)
+func checkRBL(ctx context.Context, query string) (bool, string) {
+	var r net.Resolver
+	ips, err := r.LookupIPAddr(ctx, query)
 	if err != nil || len(ips) == 0 {
 		return false, ""
 	}
@@ -356,15 +369,17 @@ func cdnDetectHandler(c *gin.Context) {
 		CNAME: []string{},
 	}
 
-	cname, _ := net.LookupCNAME(host)
+	var resolver net.Resolver
+	ctx := c.Request.Context()
+	cname, _ := resolver.LookupCNAME(ctx, host)
 	if cname != "" && cname != host+"." {
 		result.CNAME = append(result.CNAME, strings.TrimSuffix(cname, "."))
 	}
 
-	ips, _ := net.LookupIP(host)
-	for _, ip := range ips {
-		if ip.To4() != nil {
-			result.IPs = append(result.IPs, ip.String())
+	addrs, _ := resolver.LookupIPAddr(ctx, host)
+	for _, addr := range addrs {
+		if addr.IP.To4() != nil {
+			result.IPs = append(result.IPs, addr.IP.String())
 		}
 	}
 
@@ -438,7 +453,7 @@ func batchLocationHandler(c *gin.Context) {
 			continue
 		}
 
-		ipInfo := ipdb.SearchIP(ipStr)
+		ipInfo := ipdb.SearchIP(c.Request.Context(), ipStr)
 		ipInfo["ip"] = ipStr
 		result.Results = append(result.Results, ipInfo)
 		result.Success++
