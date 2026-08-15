@@ -339,21 +339,34 @@ export function SpeedTestPage() {
       <div className="speedtest-stage">
         <div className="speedtest-gauge-wrap">
           <svg viewBox="0 0 260 260" className="speedtest-gauge" aria-hidden="true">
+            {/* 刻度环：60 个短刻度做仪表盘参照 */}
+            {Array.from({ length: 60 }, (_, i) => {
+              const angle = (i / 60) * Math.PI * 2 - Math.PI / 2
+              const r1 = GAUGE_RADIUS - 16
+              const r2 = i % 5 === 0 ? GAUGE_RADIUS - 24 : GAUGE_RADIUS - 20
+              const cx = 130 + Math.cos(angle) * r1
+              const cy = 130 + Math.sin(angle) * r1
+              const x2 = 130 + Math.cos(angle) * r2
+              const y2 = 130 + Math.sin(angle) * r2
+              return <line key={i} x1={cx} y1={cy} x2={x2} y2={y2} className="speedtest-gauge-ticks" />
+            })}
             <circle cx="130" cy="130" r={GAUGE_RADIUS} className="speedtest-gauge-track" />
             <circle
               cx="130"
               cy="130"
               r={GAUGE_RADIUS}
-              className={`speedtest-gauge-arc${status === 'uploading' ? ' is-uploading' : ''}`}
+              className={`speedtest-gauge-arc${status === 'uploading' ? ' is-uploading' : ''}${status === 'done' ? ' is-idle-done' : ''}`}
               strokeDasharray={`${GAUGE_CIRCUMFERENCE}`}
               strokeDashoffset={GAUGE_CIRCUMFERENCE * (1 - progress)}
               transform="rotate(-90 130 130)"
             />
           </svg>
           <div className="speedtest-gauge-center">
-            <strong>{status === 'probing' ? '—' : formatMbps(currentMbps)}</strong>
-            <span>Mbps</span>
+            {/* done 后保留平均下载速度，而不是归零 —— 用户截图时数字还在 */}
+            <strong>{status === 'probing' ? '—' : formatMbps(status === 'done' ? downloadMbps : currentMbps)}</strong>
+            <span>{status === 'uploading' ? 'Mbps ↑ 上行' : status === 'downloading' ? 'Mbps ↓ 下行' : 'Mbps'}</span>
             {statusText && <small className="speedtest-live">{statusText}</small>}
+            {status === 'done' && <small className="speedtest-live">测速完成</small>}
           </div>
         </div>
 

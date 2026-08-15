@@ -583,12 +583,30 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   stroke-width: 14;
 }
 
+/* 刻度环：细一圈的短刻度，仪表盘观感，也提供进度参照 */
+.speedtest-gauge-ticks {
+  fill: none;
+  stroke: var(--td-bg-color-component);
+  stroke-width: 2;
+  opacity: 0.75;
+}
+
 .speedtest-gauge-arc {
   fill: none;
   stroke: var(--td-brand-color);
   stroke-width: 14;
   stroke-linecap: round;
-  transition: stroke-dashoffset 0.15s linear;
+  transition: stroke-dashoffset 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 待测态：完成后的满环呼吸提示「可重新测速」 */
+.speedtest-gauge-arc.is-idle-done {
+  animation: speedtest-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes speedtest-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 .speedtest-gauge-center {
@@ -674,15 +692,12 @@ code, pre { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
 
 
+/* 上传阶段：弧变绿表示方向切换，进度填充逻辑与下载一致。
+   原实现这里有个 sweep 动画直接写死 stroke-dashoffset 来回摆动，
+   会覆盖 React 设置的进度值（且硬编码的是旧半径的周长 345.57，
+   现在半径 110 对应 691.15），表现为进度环乱转 —— 已删除。 */
 .speedtest-gauge-arc.is-uploading {
   stroke: var(--td-success-color);
-  animation: speedtest-sweep 1.1s ease-in-out infinite;
-}
-
-@keyframes speedtest-sweep {
-  0% { stroke-dashoffset: 345.57; }
-  50% { stroke-dashoffset: -345.57; }
-  100% { stroke-dashoffset: 345.57; }
 }
 
 
