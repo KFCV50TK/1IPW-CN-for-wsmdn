@@ -1322,9 +1322,9 @@ func readConfig() {
 	slog.Info("SSRF protection initialized", "blockPrivateIPs", ssrf.Enabled())
 }
 
+// registerLegacyAPIRoutes 注册受 Bearer 保护的查询族。
+// public-query 不在此列（公开入口，见 registerApplicationRoutes）。
 func registerLegacyAPIRoutes(r gin.IRouter) {
-	registerPublicQueryRoutes(r)
-
 	r.GET("/v1/detail/*url", checkWebsiteHandler)
 	r.GET("/v1/detail", checkWebsiteHandler)
 	r.GET("/v1/ssl/*url", sslCheckHandler)
@@ -1351,6 +1351,10 @@ func registerApplicationRoutes(r *gin.Engine) {
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("IPW_NODE_API_ENABLED")), "false") {
 		registerNodeAPIRoutes(r)
 	}
+	// public-query 是浏览器的公开入口（自带限流与并发闸），
+	// 必须挂在 Bearer 鉴权之外 —— 首版重构误把它划进保护组，
+	// 导致前端全部 401。它在 registerPublicQueryRoutes 里自行注册。
+	registerPublicQueryRoutes(r)
 	// 查询族整体挂统一 Bearer 鉴权；ACCESS_TOKEN 为空时
 	// requireBearerMiddleware 放行（匿名节点兼容）。
 	protectedAPI := r.Group("", requireBearerMiddleware())
