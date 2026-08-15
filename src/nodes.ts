@@ -91,11 +91,13 @@ const huawei: SourceNode = {
   stack: 'v4',
 }
 
+// 腾讯云上海 BGP 是双栈（部署时实测 v4/v6 均出网），因此同时进
+// dualStack 列表 —— v4/v6 测速、TCPing、DNS 页都能选到它。
 const tencentSh: SourceNode = {
   id: 'cn-shanghai-tencent-bgp',
   label: '中国 上海 腾讯云 BGP',
   url: '/tencent-sh-node/',
-  stack: 'v4',
+  stack: 'dual',
 }
 
 const sichuan: SourceNode = {
@@ -112,10 +114,10 @@ const hongKong: SourceNode = {
   stack: 'v6',
 }
 
-const dualStackNodes = [jiangsu, shenzhen] as const
+const dualStackNodes = [jiangsu, shenzhen, tencentSh] as const
 const ipv4Nodes = [guangzhou, singapore, xian] as const
 const ipv6Nodes = [sichuan, hongKong] as const
-const extraIpv4Nodes = [natSpeedNode, hongKongDedicatedNode, xian2, shiyan, hongKongVpsQuan, jdCloudBGP, huawei, tencentSh] as const
+const extraIpv4Nodes = [natSpeedNode, hongKongDedicatedNode, xian2, shiyan, hongKongVpsQuan, jdCloudBGP, huawei] as const
 
 export const sourceNodes = {
   core: [...dualStackNodes],
