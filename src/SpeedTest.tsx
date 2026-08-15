@@ -17,6 +17,7 @@ const speedTestNodes: SpeedTestNode[] = [
   { id: 'shiyan', label: '中国 湖北 十堰 电信', path: '/shiyan-node/' },
   { id: 'hongkong2', label: '中国 香港 VpsQuan', path: '/hongkong2-node/' },
   { id: 'jdcloud', label: '中国 北京 京东云 三网BGP', path: '/jdcloud-node/' },
+  { id: 'tencent-sh', label: '中国 上海 腾讯云 BGP', path: '/tencent-sh-node/' },
   { id: 'zaozhuang', label: '中国 山东 枣庄 移动/电信双线', path: '/manage-node/zaozhuang/' },
   { id: 'hongkong', label: '中国 香港 Cogent', path: '/manage-node/hongkong/' },
   { id: 'xian2', label: '中国 陕西 西安二 电信', path: '/xian2-node/' },

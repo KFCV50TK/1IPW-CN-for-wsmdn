@@ -91,6 +91,13 @@ const huawei: SourceNode = {
   stack: 'v4',
 }
 
+const tencentSh: SourceNode = {
+  id: 'cn-shanghai-tencent-bgp',
+  label: '中国 上海 腾讯云 BGP',
+  url: '/tencent-sh-node/',
+  stack: 'v4',
+}
+
 const sichuan: SourceNode = {
   id: 'cn-sichuan-telecom',
   label: '中国 四川 沙渠 电信[ZFC]',
@@ -108,7 +115,7 @@ const hongKong: SourceNode = {
 const dualStackNodes = [jiangsu, shenzhen] as const
 const ipv4Nodes = [guangzhou, singapore, xian] as const
 const ipv6Nodes = [sichuan, hongKong] as const
-const extraIpv4Nodes = [natSpeedNode, hongKongDedicatedNode, xian2, shiyan, hongKongVpsQuan, jdCloudBGP, huawei] as const
+const extraIpv4Nodes = [natSpeedNode, hongKongDedicatedNode, xian2, shiyan, hongKongVpsQuan, jdCloudBGP, huawei, tencentSh] as const
 
 export const sourceNodes = {
   core: [...dualStackNodes],
