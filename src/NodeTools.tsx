@@ -11,21 +11,17 @@ import {
   ErrorCircleIcon,
   FileSearchIcon,
   InfoCircleIcon,
-  KeyIcon,
-  LockOnIcon,
   SearchIcon,
 } from 'tdesign-icons-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   api,
-  nodeAdminApi,
   publicDiagnosticsApi,
   type ManagedNode,
   type PublicProbeKind,
 } from './api'
 import type {
-  NodeAdminKey,
   EmailSecurityResult,
   EmailSecurityRecord,
   RBLResult,
@@ -35,11 +31,6 @@ import type {
   BatchLocationGeo,
   SecurityHeadersResult,
 } from './types'
-
-const adminNodes: ManagedNode[] = [
-  { id: 'zaozhuang', label: '中国 山东 枣庄 移动/电信双线', base: '/manage-node/zaozhuang/v1' },
-  { id: 'hongkong', label: '中国 香港 Cogent', base: '/manage-node/hongkong/v1' },
-]
 
 const fallbackQueryNodes = [
   { id: 'zaozhuang', label: '中国 山东 枣庄 移动/电信双线' },
@@ -116,10 +107,6 @@ const rcodeLabels: Record<number, string> = {
   3: 'NXDOMAIN',
   4: 'NOTIMP',
   5: 'REFUSED',
-}
-
-function selectedAdminNode(nodeId: string) {
-  return adminNodes.find((item) => item.id === nodeId) || adminNodes[0]
 }
 
 function defaultTarget(probe: QueryKind) {

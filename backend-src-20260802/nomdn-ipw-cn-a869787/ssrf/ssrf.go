@@ -173,14 +173,14 @@ func IsPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// HasLocalOrPrivateIP checks whether the given hostname resolves to any private or internal IP address.
 // HasLocalOrPrivateIP 检查给定的主机名是否解析到任何私有或内部 IP 地址。
-// Returns true if at least one resolved IP is private; false if resolution fails or all IPs are public.
 // 如果至少有一个解析的 IP 是私有地址则返回 true；解析失败或全部为公网 IP 时返回 false。
-// Used in handlers to short-circuit requests to internal hosts before making outbound connections.
 // 用于在发起出站连接前，在处理器中短路对内部主机的请求。
 func HasLocalOrPrivateIP(host string) bool {
-	ips, err := lookupIP(context.Background(), host)
+	// 背景带 5s 上限的 context：这是 SSRF 预检，不该被慢 DNS 拖住整个请求
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := lookupIP(ctx, host)
 	if err != nil {
 		return false
 	}

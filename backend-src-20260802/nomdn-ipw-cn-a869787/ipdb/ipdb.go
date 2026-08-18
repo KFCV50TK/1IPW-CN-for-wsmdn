@@ -30,6 +30,7 @@ func PullDatabase(ghproxy string) error {
 		{ghproxy + "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb", "GeoLite2-ASN.mmdb"},
 		{ghproxy + "https://github.com/ljxi/GeoCN/releases/latest/download/GeoCN.mmdb", "GeoCN.mmdb"},
 		{ghproxy + "https://raw.githubusercontent.com/wp-statistics/DbIP-City-lite/master/dbip-city-lite.mmdb.gz", "dbip-city-lite.mmdb.gz"},
+		{ghproxy + "https://raw.githubusercontent.com/wp-statistics/DbIP-ASN-lite/master/dbip-asn-lite.mmdb.gz", "dbip-asn-lite.mmdb.gz"},
 	}
 
 	tmpDir := "./tmp"

@@ -2,6 +2,7 @@ package ipdb
 
 import (
 	"bufio"
+	"context"
 	"math/rand"
 	"net"
 
@@ -39,12 +40,15 @@ const (
 )
 
 var bilibiliJanitorOnce sync.Once
+var bilibiliOnce sync.Once
+var bilibiliClient *resty.Client
 
 func bilibiliCacheSet(ip string, result *BilibiliResult) {
 	if syncMapLen(&bilibiliCache) >= bilibiliCacheMax {
 		sweepBilibiliCache()
 	}
-	bilibiliCacheSet(ip, result)
+	// 原实现这里递归调用了自己（应为 Store）—— 一写入即栈溢出。
+	bilibiliCache.Store(ip, bilibiliCacheEntry{result: result, timestamp: time.Now()})
 }
 
 func syncMapLen(m *sync.Map) int {
@@ -273,6 +277,7 @@ func loadMMDB() error {
 		"geolite2_asn":  "GeoLite2-ASN.mmdb",
 		"geocn":         "GeoCN.mmdb",
 		"dbip_city":     "dbip-city-lite.mmdb",
+		"dbip_asn":      "dbip-asn-lite.mmdb",
 	}
 
 	mmdbDBs = make(map[string]*maxminddb.Reader)
@@ -304,6 +309,7 @@ func reloadMMDB() error {
 		"geolite2_asn":  "GeoLite2-ASN.mmdb",
 		"geocn":         "GeoCN.mmdb",
 		"dbip_city":     "dbip-city-lite.mmdb",
+		"dbip_asn":      "dbip-asn-lite.mmdb",
 	}
 
 	mmdbDBs = make(map[string]*maxminddb.Reader)
@@ -436,11 +442,15 @@ func searchDBIPCity(ip string) (*MMDBCityResult, error) {
 }
 
 func searchMMDBASN(ip string) (*MMDBASNResult, error) {
+	return searchMMDBASNFrom(ip, "geolite2_asn")
+}
+
+func searchMMDBASNFrom(ip, database string) (*MMDBASNResult, error) {
 	mmdbMu.RLock()
 	defer mmdbMu.RUnlock()
-	db, ok := mmdbDBs["geolite2_asn"]
+	db, ok := mmdbDBs[database]
 	if !ok {
-		return nil, fmt.Errorf("geolite2_asn not loaded")
+		return nil, fmt.Errorf("%s not loaded", database)
 	}
 
 	addr, err := netip.ParseAddr(ip)
@@ -499,24 +509,28 @@ func searchGeoCN(ip string) (*GeoCNResult, error) {
 	return result, nil
 }
 
-func searchBilibili(ip string) (*BilibiliResult, error) {
+func searchBilibili(ctx context.Context, ip string) (*BilibiliResult, error) {
 	if net.ParseIP(ip) == nil {
 		return nil, fmt.Errorf("invalid IP address: %s", ip)
 	}
 
 	if cached, ok := bilibiliCache.Load(ip); ok {
 		entry := cached.(bilibiliCacheEntry)
-		if time.Since(entry.timestamp) < 24*time.Hour {
+		if time.Since(entry.timestamp) < bilibiliCacheTTL {
 			return entry.result, nil
 		}
 		bilibiliCache.Delete(ip)
 	}
 
-	client := resty.New()
-	client.SetTimeout(8 * time.Second)
-	client.SetResponseBodyLimit(1 << 20)
-	defer client.Close()
-	resp, err := client.R().
+	// 复用连接：每次新建 resty client 会为每个查询建一条新 TLS 连接，
+	// 高频查询下握手开销显著。进程级单例 + 上下文超时足够。
+	bilibiliOnce.Do(func() {
+		bilibiliClient = resty.New()
+		bilibiliClient.SetTimeout(8 * time.Second)
+		bilibiliClient.SetResponseBodyLimit(1 << 20)
+	})
+	resp, err := bilibiliClient.R().
+		SetContext(ctx).
 		SetQueryParam("ip", ip).
 		SetResult(&BilibiliIPQueryResponse{}).
 		Get("https://api.live.bilibili.com/ip_service/v1/ip_service/get_ip_addr")
@@ -536,7 +550,7 @@ func searchBilibili(ip string) (*BilibiliResult, error) {
 		Longitude: resp.Result().(*BilibiliIPQueryResponse).Data.Longitude,
 	}
 
-	bilibiliCache.Store(ip, bilibiliCacheEntry{result: result, timestamp: time.Now()})
+	bilibiliCacheSet(ip, result)
 	return result, nil
 }
 
@@ -641,7 +655,7 @@ func Init(ghproxy string) {
 
 var allDatabases = []string{"ip2region", "qqwry", "maxmind_city", "maxmind_asn", "geocn", "dbip_city", "bilibili"}
 
-func SearchIP(ip string, databases ...string) map[string]interface{} {
+func SearchIP(ctx context.Context, ip string, databases ...string) map[string]interface{} {
 	if len(databases) == 0 {
 		databases = allDatabases
 	}
@@ -700,6 +714,14 @@ func SearchIP(ip string, databases ...string) map[string]interface{} {
 				result["maxmind_asn"] = asn
 			}
 
+		case "dbip_asn":
+			asn, err := searchMMDBASNFrom(ip, "dbip_asn")
+			if err != nil {
+				result["dbip_asn"] = "error: " + err.Error()
+			} else {
+				result["dbip_asn"] = asn
+			}
+
 		case "geocn":
 			cn, err := searchGeoCN(ip)
 			if err != nil {
@@ -717,7 +739,7 @@ func SearchIP(ip string, databases ...string) map[string]interface{} {
 			}
 
 		case "bilibili":
-			bilibili, err := searchBilibili(ip)
+			bilibili, err := searchBilibili(ctx, ip)
 			if err != nil {
 				result["bilibili"] = "error: " + err.Error()
 			} else {

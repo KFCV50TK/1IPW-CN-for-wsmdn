@@ -2,7 +2,7 @@
 
 1IPW.CN 是一个面向 IP、DNS、网络连通性和网站安全检测的开源工具站。本仓库包含 React/TDesign 前端，以及基于 [nomdn/ipw-cn](https://github.com/nomdn/ipw-cn) 扩展的 Go 后端。
 
-当前版本：`0.1.0-rc8`（预发布候选版本）。
+当前版本：`0.1.0-rc9.3.67`（预发布候选版本）。
 
 ## 主要能力
 
@@ -12,7 +12,8 @@
 - HTTP、TCP、UDP 协议测试
 - 邮箱安全、RBL、CDN 和安全响应头检测
 - 兼容 Lemon IPW RC7.1 测速节点的请求路径
-- 节点地址与访问 Key 仅由服务端环境变量注入
+- 兼容 `GET /v1/asn/:ip`、`GET /v1/whois/:domain`、`GET /v1/dnssec/:domain`
+- 节点地址仅由服务端环境变量注入，节点转发统一使用 `ACCESS_TOKEN`
 
 ## 目录
 
@@ -46,18 +47,15 @@ go run .
 
 节点地址和 Key 不应写入源码、前端变量或 Git 历史。
 
-后端公共查询代理使用以下成对变量：
+后端公共查询代理只要求节点地址：
 
 ```text
 IPW_PUBLIC_NODE_<NODE>_URL
-IPW_PUBLIC_NODE_<NODE>_KEY
 ```
 
-当前支持的 `<NODE>` 名称为 `ZAOZHUANG`、`HONGKONG`、`XIAN2`、`SHIYAN`、`HONGKONG2` 和 `JDCLOUD`。只有 URL 与 Key 都存在时，对应节点才会注册到 `/v1/public-query/nodes`。
+当前支持的 `<NODE>` 名称为 `ZAOZHUANG`、`HONGKONG`、`XIAN2`、`SHIYAN`、`HONGKONG2`、`JDCLOUD` 和 `TENCENT_SH`。节点配置 URL 后会注册到 `/v1/public-query/nodes`。
 
-本地 Vite 开发代理使用 `IPW_DEV_<NODE>_TARGET` 与 `IPW_DEV_<NODE>_KEY`。这些变量不使用 `VITE_` 前缀，因此不会注入浏览器构建产物。生产环境应由 Nginx、Caddy 或其他反向代理提供相同的同源路径。
-
-节点 Key 通过服务端 `Authorization: Bearer ...` 请求头发送。不要将 Key 放在 URL、浏览器代码、公开文档或提交记录中。
+所有自有节点统一使用服务端 `ACCESS_TOKEN`，通过 RFC 6750 `Authorization: Bearer ...` 请求头转发。本地 Vite 开发代理配置不会注入浏览器构建产物；生产环境应由 Nginx、Caddy 或其他反向代理提供相同的同源路径。不要将令牌放在 URL、浏览器代码、公开文档或提交记录中。
 
 ## 验证
 

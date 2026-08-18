@@ -143,6 +143,9 @@ docker run -p 8080:8080 -v $(pwd)/setting.json:/app/setting.json lemon-ipw
 | GET | `/v1/tcping/:ip?port=80&count=4` | TCP 连接测试 |
 | GET | `/v1/dns/:type/*domain` | DNS 解析（type: A/AAAA/CNAME/MX/TXT/NS/SRV/PTR/CAA） |
 | GET | `/v1/speed/:version/*url` | 网站测速（version: v4/v6/dual） |
+| GET | `/v1/asn/:ip` | ASN 双数据源查询与 WHOIS 增强 |
+| GET | `/v1/whois/:domain` | 结构化域名 WHOIS |
+| GET | `/v1/dnssec/:domain` | DNSSEC 签名与信任链验证 |
 | GET | `/` | 健康检查 |
 
 ## 部署架构
@@ -175,14 +178,15 @@ docker run -p 8080:8080 -v $(pwd)/setting.json:/app/setting.json lemon-ipw
 
 ## Backend API authentication
 
-Except for `GET /` and `GET /v1/curl`, backend API routes require the same
-node API key used by the distributed probe nodes:
+Except for `GET /`, `GET /v1/curl`, and the rate-limited public-query proxy,
+backend query and probe routes use one RFC 6750 token:
 
 ```http
-Authorization: Bearer sk-ipw-...
+Authorization: Bearer <ACCESS_TOKEN>
 ```
 
-Keys are loaded from `IPW_API_KEY_STORE` (default: `node_keys.json`) even when
-`IPW_NODE_API_ENABLED=false`. A main-site reverse proxy should inject the
-shared key from a server-only configuration file; never expose it in browser
-code or commit it to the repository.
+Set `ACCESS_TOKEN` in the server environment or `access_token` in
+`setting.json`. Leaving it empty keeps anonymous-node compatibility. The old
+`sk-ipw-*` key store, admin key endpoints, and `X-IPW-Admin-Token` header have
+been removed. Never expose the token in browser code or commit it to the
+repository.

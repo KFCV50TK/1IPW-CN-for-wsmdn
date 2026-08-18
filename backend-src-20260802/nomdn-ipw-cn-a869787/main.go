@@ -346,22 +346,22 @@ func (s *Setting) PortString() string {
 // Global variables and structs
 // 全局变量与结构体
 var (
-	PORTS          string
-	BIND_ADDRESS   string
-	GH_PROXY       string
-	LOG_LEVEL      string
-	SINGLE_STACK   string
-	DNS_SERVER     string
-	sfGroup        singleflight.Group
-	V6Client       *resty.Client
-	V4Client       *resty.Client
-	IPDB string
-	CORS string
+	PORTS        string
+	BIND_ADDRESS string
+	GH_PROXY     string
+	LOG_LEVEL    string
+	SINGLE_STACK string
+	DNS_SERVER   string
+	sfGroup      singleflight.Group
+	V6Client     *resty.Client
+	V4Client     *resty.Client
+	IPDB         string
+	CORS         string
 	// ACCESS_TOKEN 是全后端唯一的鉴权令牌（RFC 6750 Bearer）。
 	// 查询族（GET /v1/*）与探测族（POST /v1/http-test 等）共用；
 	// public-query 代理转发到各节点时也带它。
 	// 留空则全部开放 —— 上游 rc7.1 的默认行为，兼容匿名节点。
-	ACCESS_TOKEN  string
+	ACCESS_TOKEN   string
 	ACCEPT_DOMAINS []string
 )
 
@@ -1333,9 +1333,12 @@ func registerLegacyAPIRoutes(r gin.IRouter) {
 	r.GET("/v1/dns/:type/*domain", dnsQueryHandler)
 	r.GET("/v1/speed/:version/*url", websiteSpeedRouteHandler)
 	r.GET("/v1/speed/:version", websiteSpeedRouteHandler)
+	r.GET("/v1/whois/:domain", whoisCompatibilityHandler)
+	r.GET("/v1/dnssec/:domain", dnssecCompatibilityHandler)
 	r.GET("/v1/speedtest-payload", speedtestPayloadHandler)
 	r.POST("/v1/speedtest-upload", speedtestUploadHandler)
 	if IPDB != "false" {
+		r.GET("/v1/asn/:ip", asnLookupHandler)
 		r.GET("/v1/location/:ip", locateIP)
 		r.GET("/v1/location", locateUserIP)
 		r.GET("/v1/email-security/:domain", emailSecurityHandler)
@@ -1376,8 +1379,8 @@ func main() {
 	r := gin.Default()
 	if len(ACCEPT_DOMAINS) > 0 {
 		r.Use(cors.New(cors.Config{
-			AllowOrigins:  ACCEPT_DOMAINS,
-			AllowMethods:  []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
+			AllowOrigins: ACCEPT_DOMAINS,
+			AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 			// Authorization 是 RFC 6750 标准头；X-API-Key / X-IPW-Admin-Token
 			// 随自建密钥体系删除，不再放行
 			AllowHeaders:  []string{"Origin", "Content-Type", "Accept", "Authorization"},

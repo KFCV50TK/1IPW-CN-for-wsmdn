@@ -122,17 +122,6 @@ export interface HistoryItem {
   at: number
 }
 
-export interface NodeAdminKey {
-  id: string
-  name: string
-  created_at: string
-  revoked_at?: string
-}
-
-export interface NodeAdminKeyCreated extends NodeAdminKey {
-  key: string
-}
-
 // ========== 新增功能类型 ==========
 
 // 邮件安全检测

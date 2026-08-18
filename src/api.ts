@@ -6,8 +6,6 @@ import type {
   Stack,
   TcpingResult,
   WebsiteResult,
-  NodeAdminKey,
-  NodeAdminKeyCreated,
   EmailSecurityResult,
   RBLResult,
   CDNResult,
@@ -121,18 +119,8 @@ async function nodeRequest<T>(node: ManagedNode, path: string, options: RequestI
   return body as T
 }
 
-function adminHeaders(token: string) {
-  return { 'X-IPW-Admin-Token': token.trim() }
-}
-
 function keyHeaders(key: string) {
   return { Authorization: `Bearer ${key.trim()}` }
-}
-
-export const nodeAdminApi = {
-  listKeys: (node: ManagedNode, token: string) => nodeRequest<{ keys: NodeAdminKey[] }>(node, '/admin/keys', { headers: adminHeaders(token) }),
-  createKey: (node: ManagedNode, token: string, name: string) => nodeRequest<NodeAdminKeyCreated>(node, '/admin/keys', { method: 'POST', headers: adminHeaders(token), body: JSON.stringify({ name }) }),
-  revokeKey: (node: ManagedNode, token: string, id: string) => nodeRequest<{ status: string }>(node, `/admin/keys/${encodeURIComponent(id)}`, { method: 'DELETE', headers: adminHeaders(token) }),
 }
 
 export const nodeDiagnosticsApi = {
