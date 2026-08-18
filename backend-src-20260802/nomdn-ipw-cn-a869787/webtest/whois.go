@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // WhoisRegistrar describes the registrar fields exposed by the compatibility API.
@@ -142,12 +144,37 @@ func resolveWhoisServerFromIANA(ctx context.Context, domain string) (string, err
 	return "", fmt.Errorf("WHOIS server is unavailable for %s", domain)
 }
 
+func whoisAddress(ctx context.Context, server string) (string, error) {
+	if ip := net.ParseIP(strings.Trim(server, "[]")); ip != nil {
+		return ip.String(), nil
+	}
+	message := new(dns.Msg)
+	message.SetQuestion(dns.Fqdn(server), dns.TypeA)
+	message.RecursionDesired = true
+	for _, resolver := range dnsServers() {
+		client := &dns.Client{Timeout: 4 * time.Second}
+		response, _, err := client.ExchangeContext(ctx, message, resolver)
+		if err != nil || response == nil {
+			continue
+		}
+		for _, answer := range response.Answer {
+			if record, ok := answer.(*dns.A); ok {
+				return record.A.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("could not resolve WHOIS server %s", server)
+}
 func queryWhoisRaw(ctx context.Context, server, query string) (string, error) {
 	if strings.TrimSpace(server) == "" {
 		return "", fmt.Errorf("WHOIS server is empty")
 	}
+	address, err := whoisAddress(ctx, server)
+	if err != nil {
+		return "", err
+	}
 	dialer := net.Dialer{Timeout: 8 * time.Second}
-	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(server, "43"))
+	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(address, "43"))
 	if err != nil {
 		return "", err
 	}
